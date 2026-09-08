@@ -2,11 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.7 |
+| Versão | 1.8 |
 | Data da execução | 2026-09-08 |
 | Branch | `feat/v2-olap` |
 | Escopo | **Épico 1 completo** — T1.1 a T1.7, em quatro rodadas |
-| Resultado | **47 testes** · 39 verdes · 7 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
+| Resultado | **48 testes** · 40 verdes · 7 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
 | Progresso das tasks | [TODO.md](TODO.md) — este arquivo registra **execução**, não estado |
 
 Este arquivo é o registro de **execução de teste**. Cada rodada é organizada por épico, e dentro do épico
@@ -426,7 +426,52 @@ Custo em disco dos dois métodos, sobre as dez partições:
 A sonda é sintética: ela prova escolha de plano e razão de I/O, não latência absoluta. Latência sai do dado
 real, em [E3](epicos/E3-validacao.md).
 
-### 4.13 Consumo medido ao fim da rodada 2
+### 4.13 T-E1-44 — `bootstrap.sh` de ponta a ponta num cluster limpo
+
+O item que faltava do Go/No-Go, e a afirmação mais forte que o épico faz.
+
+`minikube delete` seguido de `bash scripts/bootstrap.sh`, sem nenhuma intervenção manual:
+
+```
+==> 1/12 cluster local                 ==> 7/12 RBAC multi-tenant
+==> 2/12 imagens                         RBAC: 4/4 asserções passaram.
+==> 3/12 namespaces                    ==> 8/12 PostgreSQL
+==> 4/12 MinIO                         ==> 9/12 MongoDB
+==> 5/12 Spark Operator + RBAC          ==> 10/12 Airflow
+==> 6/12 ClickHouse operator            ==> 11/12 smoke do connector
+                                          >> smoke-clickhouse COMPLETED
+                                        ==> 12/12 tabela de fato por tenant
+==> stack pronta.                       [exited with code 0]
+```
+
+Go/No-Go rodado em seguida, no mesmo cluster:
+
+| # | Item | Resultado |
+|---|---|---|
+| 1 | `bootstrap.sh` termina sem erro | ✅ exit 0, 12/12 |
+| 2 | Nenhum pod fora de `Running`/`Completed` | ✅ |
+| 3 | 4 prefixos no MinIO | ✅ |
+| 4 | Smoke do connector | ✅ `COMPLETED` |
+| 5 | `verify-rbac.sh` | ✅ 4/4 |
+| 6 | Control plane, 2 tenants × 2 coleções | ✅ 4 coleções |
+| 7 | `airflow dags list-import-errors` | ✅ `No data found` |
+| 8 | `profile.sh quiesce` e `resume` | ✅ nos dois sentidos |
+
+Consumo com a stack recém-construída: **3,22 GiB de 8,00 GiB (40%)**.
+
+Duas coisas que só esta execução podia provar:
+
+- **O RBAC passou 4/4 de primeira.** Nas rodadas anteriores ele foi construído incrementalmente, com o
+  template ganhando grants a cada falha do connector ([D11](#d11--rbac-por-database-não-basta-para-o-connector-spark)).
+  Aqui o template foi aplicado uma vez, num ClickHouse virgem, e bastou.
+- **A correção de idempotência do [A1](#12-auditoria-de-encerramento-do-épico-1) funcionou.** O
+  `submit_spark` submeteu o smoke sem tropeçar em CR antigo — que era o cenário exato do defeito.
+
+> A stack tinha sido construída passo a passo ao longo de quatro entregas, cada passo com seu aceite.
+> Isso prova que **as peças funcionam**, não que a sequência funciona. São afirmações diferentes, e só a
+> segunda sustenta "qualquer um reproduz este ambiente".
+
+### 4.14 Consumo medido ao fim da rodada 2
 
 | Pod | Uso | Limite |
 |---|---|---|
@@ -889,7 +934,6 @@ Sem isto, os resultados acima valem menos do que parecem.
 | `profile.sh quiesce` com workload real | Airflow e MongoDB não existem | O `scale --replicas=0` e a restauração nunca escalaram nada de verdade |
 | `quiesce` bloqueando por Spark ativo | Não há Spark Operator utilizável | Só a lógica de filtro foi testada, sinteticamente |
 | Comportamento sob pressão de memória | Nada consumiu o nó | D4 foi medido, mas o OOM que ele prevê não foi provocado |
-| `bootstrap.sh` de ponta a ponta | A stack subiu passo a passo, cada um com seu aceite | **A reprodutibilidade da POC segue não verificada.** É o único item aberto do Go/No-Go do E1 |
 | Qualquer coisa de E2 e E3 | Nada implementado | Tudo |
 | Recuperação do RBAC em réplica nova | 1 réplica só | O item 3 do [ADR-003](decisoes/ADR-003-rbac-multi-tenant.md) segue sendo teoria |
 
