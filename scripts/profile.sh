@@ -9,7 +9,7 @@ STATE_FILE="${DATAMART_POC_STATE:-$HOME/.datamart-poc-profile.state}"
 
 # ns:tipo/nome:replicas_default
 WORKLOADS=(
-  "$NS_AIR:deployment/airflow-scheduler:1"
+  "$NS_AIR:statefulset/airflow-scheduler:1"
   "$NS_AIR:deployment/airflow-webserver:1"
   "$NS_DATA:statefulset/mongodb:1"
 )

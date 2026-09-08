@@ -1,0 +1,29 @@
+# Permite ao Airflow criar e acompanhar SparkApplication no namespace datamart.
+# A SA é airflow-scheduler, não airflow-worker: com LocalExecutor NÃO existe
+# deployment de workers — as tasks rodam dentro do pod do scheduler.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-spark
+  namespace: datamart
+rules:
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications", "sparkapplications/status", "scheduledsparkapplications"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-spark
+  namespace: datamart
+subjects:
+  - kind: ServiceAccount
+    name: airflow-scheduler
+    namespace: airflow
+roleRef:
+  kind: Role
+  name: airflow-spark
+  apiGroup: rbac.authorization.k8s.io

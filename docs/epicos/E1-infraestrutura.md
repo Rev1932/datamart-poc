@@ -387,22 +387,28 @@ Retorna o documento com `filiais`, `tables` e `schedule_interval`.
    `redis.enabled`, `flower.enabled`, `statsd.enabled` e `triggerer.enabled` em `false`.
 2. **`postgresql.enabled: false`** e StatefulSet `postgres:16-alpine` próprio para o metadata DB, com
    Secret carregando a connection string em `data.metadataSecretName`.
-3. Imagem custom de três linhas: `FROM apache/airflow:2.11.2` mais `pip install pymongo`.
-4. DAGs e manifestos por ConfigMap, montados em `/opt/airflow/dags` e `/opt/airflow/dags/manifests`.
+3. **Nada de imagem custom.** `dw-dados/datawake-airflow:0.1.0` já é Airflow **2.11.2** com **pymongo
+   4.10.1**, e todos os imports da DAG produtiva resolvem nela. Mesma correção de T1.3: a imagem existe,
+   construir outra é retrabalho com risco de divergir da de produção.
+4. DAGs por ConfigMap, copiadas para um `emptyDir` por **initContainer**.
 5. Variable via env var `AIRFLOW_VAR_MONGODB_K8S_TEST` no scheduler e no webserver.
 6. Role e RoleBinding no namespace `datamart` para a SA **`airflow-scheduler`**:
-   - `sparkoperator.k8s.io` / `sparkapplications`: `create, get, list, watch, delete, patch`
+   - `sparkoperator.k8s.io` / `sparkapplications`: `create, get, list, watch, delete, patch, update`
    - core / `pods`, `pods/log`, `events`: `get, list, watch`
+7. `airflow/dags/smoke_control_plane.py`: prova Variable, pymongo, o contrato do control plane e o RBAC
+   do spark-operator, replicando os idiomas da DAG produtiva.
 
 ### Por que cada desvio do default
 
 | Item | Motivo |
 |---|---|
 | `postgresql.enabled: false` | O subchart é Bitnami; a mudança de hospedagem das imagens quebra o pull. Sinal: `ImagePullBackOff` em `airflow-postgresql-0` |
-| Imagem custom | A DAG produtiva importa `pymongo` diretamente, não o provider `apache-airflow-providers-mongo` |
-| ConfigMap em vez de `minikube mount` | `minikube mount` é um processo de longa duração que morre com o terminal no WSL2. Limite de 1 MiB por ConfigMap, folgado aqui |
+| Imagem de produção, sem build | Já traz Airflow 2.11.2 e pymongo. A DAG produtiva importa `pymongo` direto, não o provider |
+| ConfigMap em vez de `minikube mount` | `minikube mount` é um processo de longa duração que morre com o terminal no WSL2 |
+| **initContainer + `emptyDir`** | Montar a ConfigMap DIRETO em `/opt/airflow/dags` quebra o walker de DAGs — ver [D13](../TESTES.md#d13--configmap-montada-em-optairflowdags-quebra-o-walker-de-dags) |
 | Variable por env var | Backend de env var não escreve no metadata DB, então o ambiente é reproduzível. **O nome precisa ser o exato de produção** para que o arquivo da DAG seja byte-idêntico ao de `dtlk-airflow-pipeline/dags/` |
 | SA `airflow-scheduler` | Com `LocalExecutor` **não existe deployment de workers** — as tasks rodam dentro do pod do scheduler |
+| `webserverSecretKey` literal | Sem isso cada `helm upgrade` rotaciona a chave e invalida as sessões da UI |
 
 > Produção usa `CeleryExecutor` e git-sync. Ambos os desvios são de recurso e de conveniência local, e
 > estão declarados aqui para que a apresentação não os apresente como equivalência.
@@ -410,32 +416,41 @@ Retorna o documento com `filiais`, `tables` e `schedule_interval`.
 ### Artefatos
 
 `infra/airflow/values.yaml`, `infra/airflow/postgres-metadata.yaml`, `infra/airflow/rbac-spark.yaml`,
-`images/airflow/Dockerfile`.
+`airflow/dags/smoke_control_plane.py`. **Não há `images/airflow/Dockerfile`** — a imagem de produção
+basta.
 
 ### Aceite
 
 ```bash
-kubectl -n airflow exec deploy/airflow-scheduler -- airflow dags list-import-errors
+kubectl -n airflow exec statefulset/airflow-scheduler -c scheduler -- \
+  airflow dags list-import-errors
 ```
-Saída vazia.
+Saída `No data found`.
+
+O scheduler é **StatefulSet** neste chart, não Deployment, e o pod tem dois containers — daí o
+`statefulset/` e o `-c scheduler`. Um `deploy/airflow-scheduler` falha com `NotFound`.
+
+Um DagBag vazio também não tem erro de import, então o aceite se apoia na `smoke_control_plane`: ela é
+carregada, roda e prova o caminho inteiro.
 
 ### Riscos
 
 | Risco | Sinal | Mitigação |
 |---|---|---|
 | Subchart Bitnami não puxa | `ImagePullBackOff` em `airflow-postgresql-0` | `postgresql.enabled=false` |
-| `pymongo` ausente | `ModuleNotFoundError: pymongo` em `list-import-errors` | Imagem custom |
-| RoleBinding para a SA errada | `sparkapplications... is forbidden: User "system:serviceaccount:airflow:airflow-worker" cannot create` | RoleBinding para `airflow-scheduler` |
+| `pymongo` ausente | `ModuleNotFoundError: pymongo` em `list-import-errors` | A imagem de produção já o traz |
+| RoleBinding para a SA errada | `sparkapplications... is forbidden: User "system:serviceaccount:airflow:airflow-worker" cannot create` | RoleBinding para `airflow-scheduler`; a task `checar_rbac_spark` prova |
+| ConfigMap montada direto em `dags/` | `Detected recursive loop when walking DAG directory` | initContainer copiando para `emptyDir` |
 
 ---
 
 ## Checklist Go/No-Go do épico
 
-- [ ] `PROFILE=full bash scripts/bootstrap.sh` termina sem erro
+- [ ] `bash scripts/bootstrap.sh` (perfil `small`) termina sem erro
 - [ ] `kubectl -n datamart get pods` — todos `Running`, nenhum `CrashLoopBackOff`
 - [ ] `mc ls poc/datamart/` lista os 4 prefixos
-- [ ] `docker run --rm honeycomb:poc ls /opt/spark/jars | grep -c clickhouse` ≥ 3
+- [ ] o smoke do connector ClickHouse chega a `COMPLETED`
 - [ ] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam
 - [ ] `mongosh` retorna o documento de control plane dos 2 tenants
-- [ ] `airflow dags list-import-errors` vazio
+- [ ] `airflow dags list-import-errors` devolve `No data found` e a `smoke_control_plane` roda com sucesso
 - [ ] `bash scripts/profile.sh quiesce && bash scripts/profile.sh resume` funciona nos dois sentidos

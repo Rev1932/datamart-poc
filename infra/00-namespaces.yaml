@@ -4,3 +4,10 @@ metadata:
   name: datamart
   labels:
     app.kubernetes.io/part-of: datamart-poc
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: airflow
+  labels:
+    app.kubernetes.io/part-of: datamart-poc

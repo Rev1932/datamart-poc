@@ -1,0 +1,143 @@
+# Values do chart apache-airflow/airflow 1.16.0 para a POC.
+#
+#   helm upgrade --install airflow apache-airflow/airflow --version 1.16.0 \
+#     -n airflow -f infra/airflow/values.yaml
+#
+# Desvios de produção, todos de recurso ou de conveniência local, nunca de comportamento
+# das DAGs: LocalExecutor em vez de CeleryExecutor, e DAGs por ConfigMap em vez de git-sync.
+
+airflowVersion: "2.11.2"
+executor: LocalExecutor
+
+images:
+  airflow:
+    repository: dw-dados/datawake-airflow
+    tag: "0.1.0"
+    # Carregada por `minikube image load`; não há registry alcançável de dentro do cluster.
+    pullPolicy: Never
+
+# O subchart de Postgres é Bitnami e o pull quebra. Metadata DB próprio em
+# infra/airflow/postgres-metadata.yaml.
+postgresql:
+  enabled: false
+data:
+  metadataSecretName: airflow-metadata
+
+# Nada disso é usado com LocalExecutor.
+redis:
+  enabled: false
+flower:
+  enabled: false
+statsd:
+  enabled: false
+triggerer:
+  enabled: false
+
+# Backend de env var não escreve no metadata DB: o ambiente sai reproduzível de um
+# `helm upgrade`. O NOME é o exato de produção, para que o arquivo da DAG seja
+# byte-idêntico ao de dtlk-airflow-pipeline/dags/.
+env:
+  - name: AIRFLOW_VAR_MONGODB_K8S_TEST
+    value: "mongodb://dm_root:dm_root_poc@mongodb.datamart.svc.cluster.local:27017/?authSource=admin"
+
+dags:
+  persistence:
+    enabled: false
+  gitSync:
+    enabled: false
+
+scheduler:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "300m"
+      memory: "640Mi"
+    limits:
+      cpu: "2"
+      memory: "1280Mi"
+  extraInitContainers:
+    # Copia os DAGs da ConfigMap para um emptyDir. Montar a ConfigMap DIRETO em
+    # /opt/airflow/dags quebra o walker do Airflow: o mecanismo de atualizacao atomica
+    # cria os symlinks ..data e ..<timestamp>, e o walk acusa
+    # "Detected recursive loop when walking DAG directory".
+    - name: copiar-dags
+      image: dw-dados/datawake-airflow:0.1.0
+      imagePullPolicy: Never
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -eu
+          cp -L /dags-src/*.py /opt/airflow/dags/
+          ls -l /opt/airflow/dags/
+      volumeMounts:
+        - name: dags-src
+          mountPath: /dags-src
+          readOnly: true
+        - name: dags
+          mountPath: /opt/airflow/dags
+  extraVolumes:
+    - name: dags-src
+      configMap:
+        name: airflow-dags
+    - name: dags
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: dags
+      mountPath: /opt/airflow/dags
+
+webserver:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "320Mi"
+    limits:
+      cpu: "1"
+      memory: "768Mi"
+  extraInitContainers:
+    # Copia os DAGs da ConfigMap para um emptyDir. Montar a ConfigMap DIRETO em
+    # /opt/airflow/dags quebra o walker do Airflow: o mecanismo de atualizacao atomica
+    # cria os symlinks ..data e ..<timestamp>, e o walk acusa
+    # "Detected recursive loop when walking DAG directory".
+    - name: copiar-dags
+      image: dw-dados/datawake-airflow:0.1.0
+      imagePullPolicy: Never
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -eu
+          cp -L /dags-src/*.py /opt/airflow/dags/
+          ls -l /opt/airflow/dags/
+      volumeMounts:
+        - name: dags-src
+          mountPath: /dags-src
+          readOnly: true
+        - name: dags
+          mountPath: /opt/airflow/dags
+  extraVolumes:
+    - name: dags-src
+      configMap:
+        name: airflow-dags
+    - name: dags
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: dags
+      mountPath: /opt/airflow/dags
+
+# Literal em vez de gerada: sem isso cada `helm upgrade` rotaciona a chave e invalida
+# as sessões da UI. Local e descartável, como o resto das credenciais da POC.
+webserverSecretKey: datamart-poc-webserver-key
+
+createUserJob:
+  useHelmHooks: false
+  applyCustomEnv: false
+migrateDatabaseJob:
+  useHelmHooks: false
+  applyCustomEnv: false
+
+config:
+  core:
+    # A leitura do Mongo em parse time tem serverSelectionTimeoutMS=5000; o default de
+    # 30s do dagbag_import_timeout esconderia uma indisponibilidade real por muito tempo.
+    dagbag_import_timeout: "60"
+    load_examples: "False"

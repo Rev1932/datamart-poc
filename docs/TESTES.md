@@ -2,11 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.3 |
+| Versão | 1.4 |
 | Data da execução | 2026-09-08 |
 | Branch | `feat/v2-olap` |
-| Escopo | E1/T1.1, T1.2, T1.5 (rodada 1), T1.4, T1.6 (rodada 2) e T1.3 (rodada 3) |
-| Resultado | **36 testes** · 30 verdes · 5 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
+| Escopo | **Épico 1 completo** — T1.1 a T1.7, em quatro rodadas |
+| Resultado | **41 testes** · 34 verdes · 6 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
 | Progresso das tasks | [TODO.md](TODO.md) — este arquivo registra **execução**, não estado |
 
 Este arquivo é o registro de **execução de teste**. Cada rodada é organizada por épico, e dentro do épico
@@ -313,7 +313,7 @@ O formato do documento saiu da **leitura das DAGs produtivas**, não de suposiç
 > não materializa nada. As DAGs de gold da POC são de destino único, então essa validação precisa sair na
 > cópia, ou elas falham antes de subir qualquer pod.
 
-### 4.9 Consumo medido ao fim da rodada 2
+### 4.11 Consumo medido ao fim da rodada 2
 
 | Pod | Uso | Limite |
 |---|---|---|
@@ -395,11 +395,72 @@ Foram **seis execuções** até o verde, e cada falha foi um achado diferente:
 
 O ClickHouse caiu **59%** só por parar de instrumentar a si mesmo.
 
-### 4.10 Tasks não executáveis
+### 4.9 T1.7 — Airflow
 
-| Task | Por quê |
-|---|---|
-| T1.7 — Airflow | Não implementada |
+| ID | O que prova | Resultado |
+|---|---|---|
+| T-E1-33 | A imagem de produção tem Airflow 2.11.2, pymongo e todos os imports da DAG | ✅ |
+| T-E1-34 | Chart 1.16.0 sobe com `LocalExecutor` e metadata DB próprio | ✅ |
+| T-E1-35 | **Aceite:** `airflow dags list-import-errors` devolve `No data found` | 🔧 [D13](#d13--configmap-montada-em-optairflowdags-quebra-o-walker-de-dags) |
+| T-E1-36 | A `smoke_control_plane` roda e valida o control plane dos 2 tenants | ✅ |
+| T-E1-37 | O scheduler cria e lê `SparkApplication` no namespace `datamart` | ✅ |
+
+T-E1-33 — verificado **antes** de escrever qualquer Dockerfile:
+
+```
+airflow 2.11.2 · Python 3.12.6 · pymongo 4.10.1 · uid 50000(airflow) presente
+OK  pymongo, yaml, pendulum, airflow.datasets, airflow.decorators,
+    airflow.providers.cncf.kubernetes.operators.spark_kubernetes,
+    airflow.models, airflow.utils.state
+```
+
+A especificação pedia uma imagem custom de três linhas (`FROM apache/airflow:2.11.2` + `pip install
+pymongo`). Ela já existe publicada, com exatamente esse conteúdo. Mesma correção de T1.3.
+
+T-E1-35, o aceite:
+
+```
+$ airflow dags list-import-errors
+No data found
+
+$ airflow dags list
+dag_id              | fileloc                                  | owners  | is_paused
+smoke_control_plane | /opt/airflow/dags/smoke_control_plane.py | airflow | True
+```
+
+T-E1-36 e T-E1-37 — a DAG rodou com `success` e as duas tasks passaram:
+
+```
+[smoke] 6 SparkApplication em datamart: ['smoke-clickhouse', ..., 'smoke-clickhouse-r6']
+[smoke] acme:   {'filiais': 2, 'tables': 3, 'gold_tables': 1, 'versao': 'poc'}
+[smoke] globex: {'filiais': 2, 'tables': 3, 'gold_tables': 1, 'versao': 'poc'}
+```
+
+T-E1-37 é o que fecha o E1: **de dentro do pod do scheduler**, com a SA `airflow-scheduler`, listando CRs
+do spark-operator em **outro namespace**. É a permissão exata que E2/T2.6 vai usar para submeter as
+SparkApplication — provada antes de existir DAG que dependa dela.
+
+> Um DagBag vazio também devolve `No data found`. Sem a `smoke_control_plane`, o aceite desta task seria
+> vacuidade: aprovaria um Airflow que não consegue importar nada de útil.
+
+**Estado da task: ✅. Épico 1 completo.**
+
+### 4.10 Consumo com a stack inteira de pé
+
+| Pod | Uso | Limite |
+|---|---|---|
+| Airflow scheduler | 505Mi | 1280Mi |
+| ClickHouse | 355Mi | 3Gi |
+| Airflow webserver | 135Mi | 768Mi |
+| MinIO | 110Mi | 1Gi |
+| PostgreSQL (braço) | 103Mi | 1792Mi |
+| MongoDB | 169Mi | 640Mi |
+| Airflow metadata PG | 60Mi | 384Mi |
+| **requests agendados** | **3,86 GiB** | — |
+| **nó** | **4,52 GiB** | **8,00 GiB (56,5%)** |
+
+Os sete serviços simultâneos, sem Spark rodando. Sobram 3,5 GiB para o pico de ingestão, que pede
+2,75 GiB de driver mais executor — cabe, com folga de ~0,7 GiB.
 
 ---
 
@@ -443,6 +504,7 @@ braços, sem o qual nenhum número de performance pode ser publicado).
 | [D10](#d10--docker-entrypoint-initdbd-é-pulado-em-silêncio-num-pvc-reusado) | média | padrão sugerido na especificação | corrigido, verificado em T-E1-23 |
 | [D11](#d11--rbac-por-database-não-basta-para-o-connector-spark) | alta | lacuna do template de T1.5 | corrigido, verificado em T-E1-32 |
 | [D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) | alta | default do ClickHouse | corrigido, verificado em T-E1-32 |
+| [D13](#d13--configmap-montada-em-optairflowdags-quebra-o-walker-de-dags) | média | padrão sugerido na especificação | corrigido, verificado em T-E1-35 |
 
 ### D4 — O nó anuncia a capacidade do host, não a do cgroup
 
@@ -672,6 +734,33 @@ Efeito medido: uso do ClickHouse de **855Mi para 354Mi**, uma queda de 59% sem n
 
 **Pendência:** os dados já acumulados (7,9 M de linhas) continuam no PVC. Não crescem mais, mas ocupam
 disco e ainda podem ser mergeados uma última vez. Limpar exige `TRUNCATE`, que aguarda autorização.
+
+### D13 — ConfigMap montada em `/opt/airflow/dags` quebra o walker de DAGs
+
+**Severidade: média. Padrão sugerido na especificação.**
+
+A especificação mandava montar as DAGs por ConfigMap em `/opt/airflow/dags`. Feito assim, qualquer
+comando do Airflow que percorra o diretório morre:
+
+```
+RuntimeError: Detected recursive loop when walking DAG directory /opt/airflow/dags:
+/opt/airflow/dags/..2026_09_08_16_15_53.3344774768 has appeared more than once.
+```
+
+O kubelet monta ConfigMap com atualização atômica: os arquivos reais ficam em `..<timestamp>/`, um symlink
+`..data` aponta para lá, e cada chave vira outro symlink. O walker do Airflow segue os symlinks, encontra
+o mesmo diretório duas vezes e aborta — **antes** de olhar qualquer arquivo `.py`.
+
+Não é erro de import: é o comando inteiro falhando com exit 1. `list-import-errors`, `list` e o próprio
+scheduler param juntos.
+
+**Correção:** initContainer que copia com `cp -L` da ConfigMap para um `emptyDir`, e é o `emptyDir` que
+vai montado em `/opt/airflow/dags`. Resolve também os subdiretórios — `manifests/`, que
+[E2](epicos/E2-execucao.md) T2.6 vai precisar, e que um mount por `subPath` obrigaria a listar arquivo
+por arquivo.
+
+> Custo: as DAGs não recarregam sozinhas quando a ConfigMap muda; é preciso reiniciar o pod. Aceitável
+> numa POC, e o motivo de produção usar git-sync.
 
 ---
 
