@@ -2,20 +2,65 @@
 # Sobe o cluster local (minikube) para a POC. Roda dentro do WSL2 (driver docker).
 set -euo pipefail
 
-CPUS="${CPUS:-4}"
-MEMORY="${MEMORY:-8g}"
-DISK="${DISK:-40g}"
+PROFILE="${PROFILE:-small}"
+
+case "$PROFILE" in
+  full)  CPUS=6; MEMORY_GIB=10 ;;
+  small) CPUS=4; MEMORY_GIB=8 ;;
+  *)
+    echo "ERRO: PROFILE inválido '$PROFILE'. Use full ou small." >&2
+    exit 1
+    ;;
+esac
+
+DISK="${DISK:-90g}"
+RAM_MIN_GIB=$(( MEMORY_GIB + 5 ))
+DISK_MIN_GIB=82
 
 if ! command -v minikube >/dev/null 2>&1; then
   echo "ERRO: minikube não encontrado no PATH." >&2
   exit 1
 fi
 
+ram_total_gib="$(awk '/^MemTotal:/ {printf "%d", $2/1048576}' /proc/meminfo)"
+if (( ram_total_gib < RAM_MIN_GIB )); then
+  cat >&2 <<EOF
+ERRO: RAM insuficiente para PROFILE=$PROFILE.
+  disponível no WSL2 : ${ram_total_gib} GiB
+  exigido            : ${RAM_MIN_GIB} GiB (${MEMORY_GIB} para o nó + 5 para o WSL2 e suas ferramentas)
+
+Rode o perfil reduzido: PROFILE=small bash cluster/minikube-up.sh
+Ou ajuste %USERPROFILE%\\.wslconfig no Windows e rode 'wsl --shutdown':
+  [wsl2]
+  memory=$(( RAM_MIN_GIB + 1 ))GB
+EOF
+  exit 1
+fi
+
+docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+[[ -d "${docker_root:-}" ]] || docker_root=/var/lib/docker
+[[ -d "$docker_root" ]] || docker_root=/
+
+disk_free_gib="$(df -BG --output=avail "$docker_root" | tail -1 | tr -dc '0-9')"
+if (( disk_free_gib < DISK_MIN_GIB )); then
+  cat >&2 <<EOF
+ERRO: espaço em disco insuficiente em $docker_root.
+  livre   : ${disk_free_gib} GiB
+  exigido : ${DISK_MIN_GIB} GiB (76 de PersistentVolumeClaim + ~6 de imagens)
+
+Sem isso o nó ganha o taint node.kubernetes.io/disk-pressure no meio da carga:
+pods são evictados e o ClickHouse falha com Code 243 (NOT_ENOUGH_SPACE).
+Libere espaço com 'docker system prune -a' ou expanda o vhdx do WSL2.
+EOF
+  exit 1
+fi
+
 if ! minikube status >/dev/null 2>&1; then
-  echo ">> minikube start (cpus=$CPUS memory=$MEMORY disk=$DISK)"
-  minikube start --driver=docker --cpus="$CPUS" --memory="$MEMORY" --disk-size="$DISK"
+  echo ">> minikube start (perfil=$PROFILE cpus=$CPUS memory=${MEMORY_GIB}g disk=$DISK)"
+  minikube start --driver=docker --cpus="$CPUS" --memory="${MEMORY_GIB}g" --disk-size="$DISK"
 else
-  echo ">> minikube já está rodando."
+  echo ">> minikube já está rodando — perfil NÃO é reaplicado em cluster existente."
+  echo "   Para trocar de perfil: minikube delete && PROFILE=$PROFILE bash cluster/minikube-up.sh"
 fi
 
 echo ">> habilitando addons"
@@ -23,5 +68,5 @@ minikube addons enable storage-provisioner
 minikube addons enable default-storageclass
 minikube addons enable metrics-server || true
 
-kubectl get nodes
-echo ">> cluster pronto."
+kubectl get node -o jsonpath='{.items[0].status.capacity}'; echo
+echo ">> cluster pronto (perfil=$PROFILE)."
