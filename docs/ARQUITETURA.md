@@ -181,7 +181,7 @@ Comparar ClickHouse contra um Postgres sem índice não é um benchmark, é um e
 ataque que virá da sala.
 
 **Correção:** T1.4 — índice `(filial, banco, unidade_producao_id, "timestamp")`, `ANALYZE`, e tuning de
-memória. Opcionalmente um terceiro braço `pg-tuned` particionado, que antecipa o contra-argumento
+memória. Um terceiro braço `pg-tuned` no schema `gold_tuned` — particionado por mês mais BRIN — antecipa o contra-argumento
 "então é só arrumar o Postgres" com uma barra medida em vez de uma opinião.
 
 ---

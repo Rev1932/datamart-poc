@@ -119,6 +119,7 @@ sobreviva ao escrutínio técnico de quem for contestá-lo. Não uma promessa, n
 |---|---|
 | [ARQUITETURA.md](ARQUITETURA.md) | Diagrama alvo, decisões transversais, modelagem no destino, o que a POC não prova |
 | [TESTES.md](TESTES.md) | Registro de execução de teste por épico, defeitos abertos e o que não foi testado |
+| [TUNING.md](TUNING.md) | Todo ajuste feito, o motivo de cada um e como conferir se está aplicado |
 | [TODO.md](TODO.md) | Marcos, tasks e ações com estado — **fonte única do progresso** |
 | [epicos/E1-infraestrutura.md](epicos/E1-infraestrutura.md) | 7 tasks, uma por serviço |
 | [epicos/E2-execucao.md](epicos/E2-execucao.md) | 6 tasks, pipelines e orquestração |

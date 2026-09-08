@@ -214,8 +214,20 @@ Corrige o defeito **D3** ([ARQUITETURA.md §4](../ARQUITETURA.md#4-defeitos-veri
      ON public.fact_200_cep (filial, banco, unidade_producao_id, "timestamp");
    ANALYZE public.fact_200_cep;
    ```
-4. **Opcional, recomendado:** terceiro braço `pg-tuned` — mesma tabela com `PARTITION BY RANGE
-   ("timestamp")` mensal mais índice BRIN (Block Range Index).
+4. Terceiro braço `pg-tuned` em `ddl/postgres/03_pg_tuned.sql`, no schema **`gold_tuned`**: a mesma
+   tabela com `PARTITION BY RANGE ("timestamp")` mensal, o **mesmo** índice do painel, e um BRIN
+   (Block Range Index) sobre `timestamp` com `pages_per_range = 32`.
+
+   Três detalhes decidem se este braço mede alguma coisa:
+
+   | Detalhe | Por quê |
+   |---|---|
+   | O `INSERT` tem `ORDER BY "timestamp"` | BRIN guarda min/max por faixa de blocos. Em tabela embaralhada o índice existe, é consultado, e não descarta bloco nenhum |
+   | O índice do painel é repetido aqui | Sem ele o braço tunado **perderia** para o simples, e a comparação viraria um espantalho ao contrário |
+   | Sem `PRIMARY KEY` | Tabela particionada exige que a PK contenha a chave de partição. Esta é alvo de leitura, nunca de escrita concorrente |
+
+   A geração das partições usa `\gexec` e não um bloco `DO`: o psql **não** substitui `:origem` dentro
+   de dollar-quoting.
 
 ### Por que o item 3 não é opcional
 
@@ -231,7 +243,7 @@ medida vale mais do que mais um fator 2× na barra do ClickHouse. Custa uma DDL 
 ### Artefatos
 
 `infra/postgres/postgres-statefulset.yaml`, `infra/postgres/postgres-config.yaml`,
-`ddl/postgres/02_indices.sql`, opcionalmente `ddl/postgres/03_pg_tuned.sql`.
+`ddl/postgres/02_indices.sql`, `ddl/postgres/03_pg_tuned.sql`. Ambos rodam **depois** da carga, nessa ordem.
 
 ### Aceite
 

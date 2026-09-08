@@ -72,6 +72,7 @@ Aceite: os 4 prefixos listados, incluindo `stage/` — [T-E1-10](TESTES.md#43-t1
 
 - [x] Manter `minio-standalone.yaml`
 - [x] Prefixo `stage/` no `bucket-provision-job.yaml`
+- [x] `infra/minio/console-nodeport.yaml` e `scripts/minio-ui.sh` — console acessível para a carga manual
 
 ### ✅ T1.3 — Spark Operator e imagem honeycomb
 Aceite: o smoke do connector chega a `COMPLETED` —
@@ -103,7 +104,7 @@ Aceite: `EXPLAIN` sai de `Parallel Seq Scan` (3207 buffers) para `Index Scan` (6
 - [x] `ddl/postgres/02_indices.sql` + `ANALYZE`
 - [x] `ddl/postgres/01_tenants.sql` e `infra/postgres/job-init.yaml` — um database por tenant, idempotente
 - [x] `ddl/postgres/00_probe_indice.sql` — prova a escolha de plano sem depender da carga
-- [ ] *(opcional, aguarda decisão)* terceiro braço `pg-tuned` particionado + BRIN
+- [x] `ddl/postgres/03_pg_tuned.sql` — terceiro braço no schema `gold_tuned`: particionado por mês + BRIN
 
 Dois defeitos no caminho: [D7](TESTES.md#d7--argumento-inválido-no-primeiro-boot-envenena-o-pgdata)
 (um `-c` invalido no primeiro boot deixa o PGDATA permanentemente meio-inicializado) e
@@ -258,10 +259,20 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 
 ## Pendências que dependem do usuário
 
+### Abertas
+
 | # | O quê | Bloqueia |
 |---|---|---|
-| 1 | Carregar os Parquet reais no layout do honeycomb | T2.5, e por consequência todo o E3 |
-| 2 | ~~Ajustar `.wslconfig`~~ — resolvido: perfis redimensionados para os 15,5 GiB atuais | — |
-| 3 | Primeiro commit da branch `feat/v2-olap` | nada — pode ser a qualquer momento |
-| 4 | Decidir se o terceiro braço `pg-tuned` entra | T1.4 (opcional) |
-| 5 | Autorizar `TRUNCATE` das tabelas de system log já acumuladas (7,9 M linhas no PVC) | nada; é limpeza |
+| 1 | **Carregar os Parquet reais.** `bash scripts/minio-ui.sh` imprime a URL do console, as credenciais e os caminhos exatos derivados do control plane | T2.5, e por consequência **todo o E3** |
+| 2 | *(nenhuma além da carga)* | — |
+
+### Encerradas
+
+| # | O quê | Desfecho |
+|---|---|---|
+| 3 | Ajustar `.wslconfig` | Resolvido: perfis redimensionados para os 15,5 GiB reais |
+| 4 | Primeiro commit da branch | Feito |
+| 5 | Nomes de `filial` no seed do Mongo | **Não é decisão da POC**: é contrato de arquitetura entre os serviços. `scripts/minio-ui.sh` deriva e imprime os caminhos a partir do control plane, em vez de pedir que alguém os reconcilie na mão |
+| 6 | `TRUNCATE` dos system logs acumulados | **Dispensável.** Medido: 11,67 MiB em disco num PVC com 819 GiB livres, e as seis tabelas estão **congeladas** (verificado por amostragem — [T-E1-38](TESTES.md#411-verificações-de-encerramento-do-épico)). O risco era de memória em merge, e esse já foi eliminado |
+| 7 | CRD do Spark Operator na 2.5.0 com chart 2.5.2 | **Sem risco.** Diff dos três CRD instalados contra os do chart 2.5.2: **zero linhas divergentes** ([T-E1-39](TESTES.md#411-verificações-de-encerramento-do-épico)) |
+| 8 | Terceiro braço `pg-tuned` | **Entra.** Schema `gold_tuned`, entregue e medido — [T-E1-41](TESTES.md#412-t14-complemento--o-braço-pg-tuned) |
