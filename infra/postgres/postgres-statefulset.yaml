@@ -1,0 +1,96 @@
+# Braço de comparação da POC: o datamart relacional como ele é hoje em produção.
+# Corrige o defeito D3 — sem o índice do dashboard, toda query do benchmark faria
+# seq scan e a comparação não sobreviveria à primeira pergunta técnica.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-creds
+  namespace: datamart
+type: Opaque
+stringData:
+  POSTGRES_USER: dm_app
+  POSTGRES_PASSWORD: dm_app_poc
+  POSTGRES_DB: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: datamart
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: datamart
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          # Tuning por argumento e não por arquivo: `include_dir` só é aceito DENTRO do
+          # postgresql.conf, e um config_file próprio exigiria replicar hba_file e ident_file.
+          args:
+            - -c
+            - shared_buffers=384MB
+            - -c
+            - effective_cache_size=1GB
+            - -c
+            - work_mem=24MB
+            - -c
+            - random_page_cost=1.1
+            - -c
+            - max_connections=40
+            - -c
+            - track_io_timing=on
+            - -c
+            - shared_preload_libraries=pg_stat_statements
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: pg-creds
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "640Mi"
+            limits:
+              cpu: "2"
+              memory: "1792Mi"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "dm_app", "-d", "postgres"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 20Gi

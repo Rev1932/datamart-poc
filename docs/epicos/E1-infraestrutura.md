@@ -160,13 +160,15 @@ Corrige o defeito **D3** ([ARQUITETURA.md §4](../ARQUITETURA.md#4-defeitos-veri
 ### Ações
 
 1. StatefulSet `postgres:16-alpine`, PVC 20Gi, requests `300m` / `640Mi`, limits `2` / `1792Mi`.
-2. Tuning por `postgresql.conf` em ConfigMap:
+2. Tuning por **argumento** (`-c chave=valor`), não por arquivo:
    ```
-   shared_buffers = 384MB
-   effective_cache_size = 1GB
-   work_mem = 24MB
-   random_page_cost = 1.1
+   shared_buffers=384MB   effective_cache_size=1GB   work_mem=24MB
+   random_page_cost=1.1   max_connections=40         track_io_timing=on
+   shared_preload_libraries=pg_stat_statements
    ```
+   `include_dir` só é aceito **dentro** do `postgresql.conf` — passá-lo por `-c` derruba o servidor com
+   `unrecognized configuration parameter`. E um `config_file` próprio exigiria replicar `hba_file` e
+   `ident_file`. `track_io_timing` é pré-requisito do `EXPLAIN (ANALYZE, BUFFERS)` do benchmark.
 3. `ddl/postgres/02_indices.sql`, aplicado **após** a carga:
    ```sql
    CREATE INDEX IF NOT EXISTS ix_fact_200_cep_dash
@@ -299,9 +301,19 @@ As quatro asserções negativas passam:
 ### Ações
 
 1. StatefulSet `mongo:7`, uma réplica, PVC 8Gi, com `--wiredTigerCacheSizeGB 0.25` **fixo**.
-2. Job de seed que insere o documento em `Data_Catalog.k8s_<tenant>` a partir de
-   `airflow/mongo-seed/k8s_<tenant>.json`, com os campos do control plane produtivo:
-   `filiais[]`, `tables[{name, chave_pk}]`, `schedule_interval`, `honeycomb_version`, `source_tenants`.
+2. Job de seed que insere em **duas** coleções por tenant, a partir de `airflow/mongo-seed/`:
+
+   | Coleção | Lida por | Campos |
+   |---|---|---|
+   | `k8s_<tenant>` | DAG `bronze_silver` | `filiais[]`, `tables[{name, chave_pk[]}]`, `schedule_interval`, `honeycomb_version` |
+   | `k8s_<tenant>_gold` | DAG `gold_datamart` | `tables[{name, chave_pk[], gold_type}]`, `schedule_interval`, `honeycomb_version` |
+
+   O contrato saiu da leitura das DAGs produtivas, não de suposição. Duas correções à especificação
+   original: são **duas** coleções, não uma; e `source_tenants` não entra — é exclusivo da DAG de
+   super-tenant (`k8s_lakatos_silver_super_tenant`), que a POC não replica.
+
+3. Probe de readiness por `tcpSocket`, não `mongosh --eval`: o mongosh é Node.js e não sobe dentro do
+   `timeoutSeconds` default de 1s. Ver [D9](../TESTES.md#d9--probe-lento-derruba-o-dns-do-service-headless).
 
 > O cache do WiredTiger precisa ser fixado. O dimensionamento default é `max(256MB, 0.5×(RAM−1GB))` e, em
 > imagens ou kernels sem consciência de cgroup, ele dimensiona contra a RAM do **nó**, não do container —
