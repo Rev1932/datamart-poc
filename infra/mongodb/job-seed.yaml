@@ -1,0 +1,63 @@
+# Insere os documentos de control plane. O ConfigMap mongo-seed-docs é criado em
+# scripts/bootstrap.sh a partir de airflow/mongo-seed/ (fonte única).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-seed
+  namespace: datamart
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: mongo-seed
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: mongo:7
+          env:
+            - name: MONGO_HOST
+              value: mongodb.datamart.svc.cluster.local
+          envFrom:
+            - secretRef:
+                name: mongo-creds
+          volumeMounts:
+            - name: docs
+              mountPath: /seed
+              readOnly: true
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              URI="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@${MONGO_HOST}:27017/?authSource=admin"
+
+              echo ">> aguardando MongoDB"
+              for _ in $(seq 1 60); do
+                mongosh "$URI" --quiet --eval "db.adminCommand('ping')" >/dev/null 2>&1 && break
+                sleep 5
+              done
+
+              for f in /seed/*.json; do
+                col="$(basename "$f" .json)"
+                echo ">> inserindo em Data_Catalog.${col}"
+                # O JSON entra interpolado pelo shell: o mongosh removeu o helper cat()
+                # do shell legado, e não expõe fs de forma garantida.
+                doc="$(cat "$f")"
+                mongosh "$URI" --quiet --eval "
+                  const doc = ${doc};
+                  doc.seeded_at = new Date();
+                  db.getSiblingDB('Data_Catalog').getCollection('${col}').insertOne(doc);
+                "
+              done
+
+              echo ">> coleções:"
+              mongosh "$URI" --quiet --eval "
+                db.getSiblingDB('Data_Catalog').getCollectionNames().forEach(c =>
+                  print('   ' + c + ': ' + db.getSiblingDB('Data_Catalog').getCollection(c).countDocuments()));
+              "
+      volumes:
+        - name: docs
+          configMap:
+            name: mongo-seed-docs

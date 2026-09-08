@@ -12,9 +12,9 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 4 de 19 tasks fechadas (T0.1, T1.1, T1.2, T1.5)
+**Progresso:** 6 de 19 tasks fechadas (T0.1, T1.1, T1.2, T1.4, T1.5, T1.6)
 
-Execução dos testes registrada em [TESTES.md](TESTES.md) — 14 verdes, 3 defeitos abertos.
+Execução dos testes registrada em [TESTES.md](TESTES.md) — 32 testes, 27 verdes, 1 defeito aberto.
 
 ---
 
@@ -80,13 +80,22 @@ Aceite: `ls /opt/spark/jars | grep -c clickhouse` ≥ 3
 - [ ] Build a partir do `Dockerfile` do honeycomb
 - [ ] Jars do connector ClickHouse por `ADD`
 
-### ⬜ T1.4 — PostgreSQL (corrige **D3**)
-Aceite: `\d+ fact_200_cep` mostra `ix_fact_200_cep_dash`; `EXPLAIN` da q04 sem `Seq Scan`
+### ✅ T1.4 — PostgreSQL (corrige **D3**)
+Aceite: `EXPLAIN` sai de `Parallel Seq Scan` (3207 buffers) para `Index Scan` (607) —
+[T-E1-24](TESTES.md#45-t14--postgresql-o-braço-de-comparação)
 
-- [ ] StatefulSet `postgres:16-alpine` + PVC 20Gi
-- [ ] Tuning: `shared_buffers`, `effective_cache_size`, `work_mem`, `random_page_cost`
-- [ ] `ddl/postgres/02_indices.sql` + `ANALYZE`
-- [ ] *(opcional)* terceiro braço `pg-tuned` particionado + BRIN
+- [x] `infra/postgres/postgres-statefulset.yaml` — StatefulSet `postgres:16-alpine` + PVC 20Gi
+- [x] Tuning por `-c`: `shared_buffers`, `effective_cache_size`, `work_mem`, `random_page_cost`,
+      `track_io_timing`, `pg_stat_statements`
+- [x] `ddl/postgres/02_indices.sql` + `ANALYZE`
+- [x] `ddl/postgres/01_tenants.sql` e `infra/postgres/job-init.yaml` — um database por tenant, idempotente
+- [x] `ddl/postgres/00_probe_indice.sql` — prova a escolha de plano sem depender da carga
+- [ ] *(opcional, aguarda decisão)* terceiro braço `pg-tuned` particionado + BRIN
+
+Dois defeitos no caminho: [D7](TESTES.md#d7--argumento-inválido-no-primeiro-boot-envenena-o-pgdata)
+(um `-c` invalido no primeiro boot deixa o PGDATA permanentemente meio-inicializado) e
+[D10](TESTES.md#d10--docker-entrypoint-initdbd-é-pulado-em-silêncio-num-pvc-reusado)
+(`/docker-entrypoint-initdb.d` e pulado em silencio num PVC reusado).
 
 ### ✅ T1.5 — ClickHouse multi-tenant → [ADR-003](decisoes/ADR-003-rbac-multi-tenant.md)
 Aceite: `verify-rbac.sh` 4/4 — [T-E1-16](TESTES.md#44-t15--clickhouse-multi-tenant)
@@ -102,11 +111,19 @@ Passou depois de dois defeitos corrigidos: [D5](TESTES.md#d5--podtemplate-declar
 [D6](TESTES.md#d6--background_pool_size--ratio-abaixo-do-mínimo-de-sanidade) (o servidor recusava iniciar).
 O `REPLACE PARTITION` pelo `loader` foi validado aqui, antes de T2.3 existir.
 
-### ⬜ T1.6 — MongoDB
-Aceite: `mongosh --eval 'db.getSiblingDB("Data_Catalog").k8s_acme.findOne()'` retorna o documento
+### ✅ T1.6 — MongoDB
+Aceite: `findOne()` em `Data_Catalog.k8s_acme` devolve o documento —
+[T-E1-27](TESTES.md#46-t16--mongodb-o-control-plane)
 
-- [ ] StatefulSet `mongo:7` com `--wiredTigerCacheSizeGB 0.25` fixo
-- [ ] Job de seed do control plane, 2 tenants
+- [x] `infra/mongodb/mongodb-statefulset.yaml` — `mongo:7`, `--wiredTigerCacheSizeGB 0.25` fixo, probe `tcpSocket`
+- [x] `airflow/mongo-seed/` — 4 documentos: `k8s_<tenant>` e `k8s_<tenant>_gold`, 2 tenants
+- [x] `infra/mongodb/job-seed.yaml` idempotente
+- [x] Contrato validado pelo mesmo caminho das DAGs produtivas
+
+Duas correcoes a especificacao, tiradas da leitura das DAGs reais: sao **duas** colecoes por tenant, nao
+uma; e `source_tenants` nao entra — e exclusivo da DAG de super-tenant.
+[D9](TESTES.md#d9--probe-lento-derruba-o-dns-do-service-headless): probe lento derruba o DNS do Service
+headless e o seed morre sem conseguir conectar.
 
 ### ⬜ T1.7 — Airflow
 Aceite: `airflow dags list-import-errors` vazio

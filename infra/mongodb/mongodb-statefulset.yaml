@@ -1,0 +1,78 @@
+# Control plane das DAGs: Data_Catalog.k8s_<tenant> e k8s_<tenant>_gold.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongo-creds
+  namespace: datamart
+type: Opaque
+stringData:
+  MONGO_INITDB_ROOT_USERNAME: dm_root
+  MONGO_INITDB_ROOT_PASSWORD: dm_root_poc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: datamart
+spec:
+  clusterIP: None
+  selector:
+    app: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: datamart
+spec:
+  serviceName: mongodb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:7
+          # O default do WiredTiger é max(256MB, 0.5x(RAM-1GB)) e, sem consciência de
+          # cgroup, dimensiona contra a RAM do NÓ — o pod morre por OOM sem query nenhuma.
+          args: ["--wiredTigerCacheSizeGB", "0.25", "--bind_ip_all"]
+          ports:
+            - containerPort: 27017
+          envFrom:
+            - secretRef:
+                name: mongo-creds
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "640Mi"
+          # tcpSocket e não `mongosh --eval`: o mongosh é Node.js e não sobe dentro do
+          # timeoutSeconds default de 1s. O mongod só abre a porta depois de inicializar.
+          readinessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 15
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 8Gi

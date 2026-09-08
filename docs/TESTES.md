@@ -2,11 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.1 |
+| Versão | 1.2 |
 | Data da execução | 2026-09-08 |
 | Branch | `feat/v2-olap` |
-| Escopo | Tudo que estava implementado até a data: E1/T1.1, T1.2, T1.5 |
-| Resultado | **24 testes** · 21 verdes · 2 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
+| Escopo | E1/T1.1, T1.2, T1.5 (rodada 1) e T1.4, T1.6 (rodada 2) |
+| Resultado | **32 testes** · 27 verdes · 4 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
 | Progresso das tasks | [TODO.md](TODO.md) — este arquivo registra **execução**, não estado |
 
 Este arquivo é o registro de **execução de teste**. Cada rodada é organizada por épico, e dentro do épico
@@ -235,13 +235,102 @@ acesso administrativo. **Isso valida o desenho de T2.3 antes de escrever T2.3.**
 
 **Estado da task: ✅.**
 
-### 4.5 Tasks não executáveis
+### 4.5 T1.4 — PostgreSQL, o braço de comparação
+
+| ID | O que prova | Resultado |
+|---|---|---|
+| T-E1-21 | StatefulSet fica `Ready` | 🔧 [D7](#d7--argumento-inválido-no-primeiro-boot-envenena-o-pgdata) + [D8](#d8--statefulset-com-pod-nunca-ready-não-sai-do-lugar-com-kubectl-apply) |
+| T-E1-22 | O tuning declarado chega ao servidor | ✅ |
+| T-E1-23 | Um database por tenant, com `pg_stat_statements` | 🔧 [D10](#d10--docker-entrypoint-initdbd-é-pulado-em-silêncio-num-pvc-reusado) |
+| T-E1-24 | **Aceite:** a query do painel deixa de fazer `Seq Scan` | ✅ |
+
+T-E1-22 — os sete settings em vigor (`shared_buffers` em blocos de 8kB = 384MB):
+
+```
+shared_buffers = 491528kB      effective_cache_size = 1310728kB
+work_mem = 24576kB             random_page_cost = 1.1
+max_connections = 40           track_io_timing = on
+```
+
+T-E1-24 é o aceite e a prova do defeito **D3**. Tabela-sonda de 300 mil linhas
+(`ddl/postgres/00_probe_indice.sql`), mesma query dos dois lados — filtro por `filial`, `banco` e janela
+de um mês, com `GROUP BY`:
+
+| | Plano escolhido | `Buffers: shared` |
+|---|---|---|
+| Só com a PK, como o honeycomb entrega hoje | `Parallel Seq Scan` | **3207** |
+| Com `ix_fact_200_cep_dash` | `Index Scan` | **607** |
+
+**5,3× menos I/O**, e o `Index Cond` cobre os quatro predicados. Sem esse índice o braço Postgres seria um
+espantalho: toda query do benchmark varreria a tabela inteira, e a comparação não sobreviveria à primeira
+pergunta técnica na sala.
+
+> A sonda usa dado sintético **de propósito**. Ela prova a escolha de plano, não a latência — latência sai
+> do dado real, em E3. Medir performance aqui seria inventar número.
+
+**Estado da task: ✅.**
+
+### 4.6 T1.6 — MongoDB, o control plane
+
+| ID | O que prova | Resultado |
+|---|---|---|
+| T-E1-25 | StatefulSet fica `Ready` | 🔧 [D9](#d9--probe-lento-derruba-o-dns-do-service-headless) |
+| T-E1-26 | O Job semeia as 4 coleções | 🔧 `cat()` não existe no mongosh |
+| T-E1-27 | **Aceite:** `findOne()` devolve o documento | ✅ |
+| T-E1-28 | O documento satisfaz o contrato lido nas DAGs produtivas | ✅ |
+
+T-E1-27:
+
+```json
+{"filiais":["filial_01","filial_02"],
+ "tables":[{"name":"andon_peso","chave_pk":["andon_peso_id"]}, ...],
+ "schedule_interval":null,"honeycomb_version":"poc"}
+```
+
+T-E1-28 valida pelo **mesmo caminho das DAGs** — `find().sort({_id:-1}).limit(1)`, que é o
+`find_one(sort=[("_id", -1)])` do pymongo — e confere as guardas que elas aplicam:
+
+```
+  acme:   filiais=2 tables=3 chave_pk_ok=true | gold tables=1 gold_type_ok=true | versao_valida=true
+  globex: filiais=2 tables=3 chave_pk_ok=true | gold tables=1 gold_type_ok=true | versao_valida=true
+```
+
+T-E1-26 falhou na primeira execução por erro meu: usei `cat()` no `--eval`, helper do shell legado `mongo`
+que o `mongosh` removeu. O JSON passou a ser interpolado pelo shell antes do `--eval`.
+
+**Estado da task: ✅.**
+
+#### Duas correções ao contrato especificado
+
+O formato do documento saiu da **leitura das DAGs produtivas**, não de suposição:
+
+1. São **duas coleções por tenant**, não uma. `k8s_<tenant>` alimenta o `bronze_silver`;
+   `k8s_<tenant>_gold` alimenta o gold e carrega `gold_type` por tabela.
+2. `source_tenants` **não entra**. É exclusivo de `k8s_lakatos_silver_super_tenant`, que a POC não replica.
+
+> Armadilha para [E2](epicos/E2-execucao.md) T2.6: a DAG de gold produtiva exige ao menos uma tabela de
+> **cada** `gold_type` (`dimension`, `fact_delta`, `fact_postgres`) — grupo vazio seria uma etapa verde que
+> não materializa nada. As DAGs de gold da POC são de destino único, então essa validação precisa sair na
+> cópia, ou elas falham antes de subir qualquer pod.
+
+### 4.7 Consumo medido ao fim da rodada
+
+| Pod | Uso | Limite |
+|---|---|---|
+| ClickHouse | 855Mi | 2304Mi |
+| PostgreSQL | 243Mi | 1792Mi |
+| MongoDB | 202Mi | 640Mi |
+| MinIO | 109Mi | 1Gi |
+| **nó** | **3,49 GiB** | **8,00 GiB (43,6%)** |
+
+O MongoDB em 202Mi confirma que 384Mi teria sido apertado e que 640Mi tem folga — o número antigo era
+estimativa minha, este é medição.
+
+### 4.8 Tasks não executáveis
 
 | Task | Por quê |
 |---|---|
 | T1.3 — Spark Operator e imagem | Não implementada. Depende de acesso ao `Dockerfile` do honeycomb |
-| T1.4 — PostgreSQL | Não implementada |
-| T1.6 — MongoDB | Não implementada |
 | T1.7 — Airflow | Não implementada |
 
 ---
@@ -280,6 +369,10 @@ braços, sem o qual nenhum número de performance pode ser publicado).
 | [D4](#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup) | alta | limitação do driver `docker` | **aberto** — não corrigível, mitigado |
 | [D5](#d5--podtemplate-declarado-mas-nunca-aplicado) | alta | herdado da V1 | corrigido, verificado em T-E1-13 |
 | [D6](#d6--background_pool_size--ratio-abaixo-do-mínimo-de-sanidade) | média | introduzido nesta branch | corrigido, verificado em T-E1-12 |
+| [D7](#d7--argumento-inválido-no-primeiro-boot-envenena-o-pgdata) | alta | introduzido nesta branch | corrigido, verificado em T-E1-21 |
+| [D8](#d8--statefulset-com-pod-nunca-ready-não-sai-do-lugar-com-kubectl-apply) | média | comportamento do Kubernetes | contornado, documentado |
+| [D9](#d9--probe-lento-derruba-o-dns-do-service-headless) | média | introduzido nesta branch | corrigido, verificado em T-E1-25 |
+| [D10](#d10--docker-entrypoint-initdbd-é-pulado-em-silêncio-num-pvc-reusado) | média | padrão sugerido na especificação | corrigido, verificado em T-E1-23 |
 
 ### D4 — O nó anuncia a capacidade do host, não a do cgroup
 
@@ -353,6 +446,98 @@ setting (20) ... is greater than the value of 'background_pool_size' *
 
 Ao mexer nesses dois settings para caber em memória, conferir o produto contra 25. Falha na subida, não
 em runtime — barulhenta, ao menos.
+
+### D7 — Argumento inválido no primeiro boot envenena o PGDATA
+
+**Severidade: alta. Introduzido por mim**, seguindo a especificação ao pé da letra.
+
+Escrevi o tuning como ConfigMap montada mais `-c include_dir=/etc/postgresql/conf.d`. `include_dir` só é
+aceito **dentro** do `postgresql.conf`; por `-c`, o servidor morre com
+`unrecognized configuration parameter`.
+
+O estrago não parou aí. O entrypoint da imagem oficial roda, nesta ordem:
+
+```
+initdb  →  pg_setup_hba_conf "$@"  →  temp server  →  cria POSTGRES_DB  →  /docker-entrypoint-initdb.d  →  exec postgres "$@"
+```
+
+`pg_setup_hba_conf` consulta o próprio binário com os args recebidos. Com o argumento inválido ela falha, e
+o `set -e` mata o entrypoint **ali** — depois do `initdb`, antes da linha de autenticação remota. Como o
+`PGDATA` ficou não-vazio, toda inicialização seguinte imprime *"Skipping initialization"* e pula tudo.
+
+Resultado: um volume permanentemente meio-inicializado — `pg_hba.conf` no default cru do `initdb`, sem
+`host all all all`, e sem nenhum database de tenant. Corrigir o argumento **não conserta o volume**.
+
+| Sintoma | Onde aparece |
+|---|---|
+| `unrecognized configuration parameter "include_dir"` | log do pod, na subida |
+| `no pg_hba.conf entry for host ..., no encryption` | qualquer cliente remoto, depois |
+| `database "dm_acme" does not exist` | qualquer cliente, depois |
+
+**Correção:** cada setting como `-c chave=valor`, e o PVC recriado para provar o caminho limpo.
+
+> Pré-voo que teria evitado tudo, e que custa um comando:
+> `postgres -C shared_buffers <os mesmos -c>` — ele valida os argumentos sem subir o servidor.
+
+### D8 — StatefulSet com pod nunca-`Ready` não sai do lugar com `kubectl apply`
+
+**Severidade: média. Comportamento do Kubernetes**, não bug de ninguém — mas custa tempo se não se conhece.
+
+Um Deployment cria um ReplicaSet novo e sobe o pod corrigido **em paralelo**. Um StatefulSet atualiza no
+lugar, um ordinal por vez, e só avança quando o pod atual está `Running` **e** `Ready`. Com um pod que
+nunca fica pronto, o rollout fica parado para sempre e o `apply` só troca o template:
+
+```
+current=postgres-df5978f67   update=postgres-659bcbf45b     ← nunca convergem
+```
+
+Aconteceu duas vezes nesta rodada: com o Postgres (D7) e com o MongoDB (D9).
+
+**Como reconhecer:** `status.currentRevision != status.updateRevision` com o pod não pronto. O único
+remédio é remover o pod — `delete pod` ou `scale --replicas=0/1`. O PVC não é afetado.
+
+### D9 — Probe lento derruba o DNS do Service headless
+
+**Severidade: média. Introduzido por mim.** A causa fica a três saltos do sintoma.
+
+O readiness probe do MongoDB era `mongosh --quiet --eval "db.adminCommand('ping').ok"`. O mongosh é uma
+aplicação Node.js e não sobe dentro do `timeoutSeconds` default, que é **1 segundo**:
+
+```
+Readiness probe failed: command timed out ... timed out after 1s
+```
+
+A cadeia a partir daí:
+
+```
+probe estoura  →  pod nunca Ready  →  Service headless não publica endpoint não-pronto
+               →  mongodb.datamart.svc.cluster.local não resolve  →  Job de seed morre em "aguardando"
+```
+
+O `mongod` estava íntegro o tempo inteiro — `ping.ok = 1` respondendo em `localhost` dentro do pod. Nada no
+log do MongoDB apontava para o problema, porque não havia problema no MongoDB.
+
+**Correção:** `tcpSocket` na 27017. Além de não estourar o timeout, evita gastar CPU subindo um runtime
+Node a cada 10s num pod de 100m. O `mongod` só abre a porta depois de inicializar, então a prova é
+equivalente.
+
+> Um Service headless publica **apenas** endereços prontos. Readiness num StatefulSet não é cosmético: é
+> pré-requisito para o nome DNS existir.
+
+### D10 — `/docker-entrypoint-initdb.d` é pulado em silêncio num PVC reusado
+
+**Severidade: média. Herdado do padrão que a especificação sugeria.**
+
+Os databases de tenant eram criados por script em `/docker-entrypoint-initdb.d`. Esse diretório só é
+processado quando o `PGDATA` está vazio. Num PVC reusado — reinstalação, troca de imagem, o próprio D7 —
+os scripts são pulados **sem log e sem erro**, e o cluster sobe verde sem os databases.
+
+É a mesma classe do [D5](#d5--podtemplate-declarado-mas-nunca-aplicado): a coisa declarada é ignorada em
+silêncio, e o serviço fica saudável.
+
+**Correção:** `infra/postgres/job-init.yaml`, Job idempotente, simétrico ao `job-rbac.yaml` do ClickHouse.
+O SQL vive em `ddl/postgres/01_tenants.sql` — arquivo único, montado por ConfigMap gerada dele. Roda em
+qualquer estado do volume e pode ser reaplicado.
 
 ---
 

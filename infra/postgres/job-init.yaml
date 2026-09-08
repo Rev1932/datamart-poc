@@ -1,0 +1,53 @@
+# Cria os databases por tenant. Fora do /docker-entrypoint-initdb.d de propósito:
+# aquele caminho só roda em volume pristino e é pulado em silêncio num PVC reusado.
+# O ConfigMap pg-init-sql é criado em scripts/bootstrap.sh a partir de ddl/postgres/.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pg-init
+  namespace: datamart
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: pg-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: postgres:16-alpine
+          env:
+            - name: PGHOST
+              value: postgres.datamart.svc.cluster.local
+          envFrom:
+            - secretRef:
+                name: pg-creds
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              export PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
+
+              echo ">> aguardando PostgreSQL em $PGHOST"
+              until pg_isready -q -d postgres; do sleep 3; done
+
+              echo ">> criando databases de tenant"
+              psql -v ON_ERROR_STOP=1 -d postgres -f /sql/01_tenants.sql
+
+              for db in dm_acme dm_globex; do
+                echo ">> preparando $db"
+                psql -v ON_ERROR_STOP=1 -d "$db" \
+                  -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
+              done
+
+              psql -qtA -d postgres -c "SELECT datname FROM pg_database WHERE datname LIKE 'dm\_%' ORDER BY 1;"
+      volumes:
+        - name: sql
+          configMap:
+            name: pg-init-sql
