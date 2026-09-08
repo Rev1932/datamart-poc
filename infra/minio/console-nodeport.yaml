@@ -1,0 +1,21 @@
+# Acesso ao console do MinIO de fora do cluster, para a carga manual dos Parquet.
+# Service separado de propósito: o `minio` ClusterIP continua sendo o que o Spark
+# resolve por DNS, e nada do caminho de dados depende deste aqui.
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  namespace: datamart
+spec:
+  type: NodePort
+  selector:
+    app: minio
+  ports:
+    - name: console
+      port: 9001
+      targetPort: 9001
+      nodePort: 30901
+    - name: api
+      port: 9000
+      targetPort: 9000
+      nodePort: 30900

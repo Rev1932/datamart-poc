@@ -2,11 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.4 |
+| Versão | 1.5 |
 | Data da execução | 2026-09-08 |
 | Branch | `feat/v2-olap` |
 | Escopo | **Épico 1 completo** — T1.1 a T1.7, em quatro rodadas |
-| Resultado | **41 testes** · 34 verdes · 6 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
+| Resultado | **44 testes** · 37 verdes · 6 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
 | Progresso das tasks | [TODO.md](TODO.md) — este arquivo registra **execução**, não estado |
 
 Este arquivo é o registro de **execução de teste**. Cada rodada é organizada por épico, e dentro do épico
@@ -313,7 +313,63 @@ O formato do documento saiu da **leitura das DAGs produtivas**, não de suposiç
 > não materializa nada. As DAGs de gold da POC são de destino único, então essa validação precisa sair na
 > cópia, ou elas falham antes de subir qualquer pod.
 
-### 4.11 Consumo medido ao fim da rodada 2
+### 4.11 Verificações de encerramento do épico
+
+Rodadas para responder pendências abertas, não para fechar task.
+
+| ID | O que prova | Resultado |
+|---|---|---|
+| T-E1-38 | Os system logs desligados estão de fato congelados | ✅ |
+| T-E1-39 | O CRD instalado (2.5.0) é compatível com o chart 2.5.2 | ✅ |
+| T-E1-40 | O console do MinIO responde de fora do cluster | ✅ |
+
+T-E1-38 — duas amostras de `system.parts` separadas por 90 s. `modification_time` não serve para isso:
+ele muda em **merge**, não só em insert.
+
+```
+tabela                         antes    depois   estado
+asynchronous_metric_log      7940432   7940432   congelada
+error_log                        282       282   congelada
+metric_log                     13813     13813   congelada
+part_log                           4         4   congelada
+processors_profile_log           199       199   congelada
+text_log                       44234     44234   congelada
+trace_log                     291309    291309   congelada
+query_log                        455       457   CRESCENDO (+2)
+```
+
+Só o `query_log` cresce, que é o que se queria manter. Total do database `system` em disco: **11,67 MiB**,
+num PVC com 819 GiB livres — 7,9 milhões de linhas cabem em 3 MiB porque o ClickHouse comprime a
+instrumentação tão bem quanto comprime dado de negócio.
+
+> Isso encerra a pendência de `TRUNCATE`: o risco era de **memória durante merge**, não de disco, e esse
+> foi eliminado ao desligar a escrita. Limpar as tabelas antigas virou opcional.
+
+T-E1-39 — comparação direta dos três CRD instalados contra os que o chart 2.5.2 empacota, em vez de
+confiar em changelog:
+
+```
+sparkapplications              linhas divergentes: 0
+scheduledsparkapplications     linhas divergentes: 0
+sparkconnects                  linhas divergentes: 0
+```
+
+O `spec.versions` é idêntico nos três. **Não há risco neste par de versões.** O risco existe como classe —
+Helm nunca atualiza CRD preexistente, e um campo novo do manifesto seria ignorado em silêncio — mas se
+materializa só num salto de minor. O chart oferece `hook.upgradeCrd=true` para esse caso.
+
+T-E1-40 — `infra/minio/console-nodeport.yaml`, Service separado do `minio` ClusterIP para que nada do
+caminho de dados dependa dele:
+
+```
+http://192.168.49.2:30901  -> HTTP 200   (console)
+http://192.168.49.2:30900  -> HTTP 200   (api)
+```
+
+Do Windows a rede do minikube (`192.168.49.0/24`) **não é roteável** — ela vive dentro do WSL2.
+`scripts/minio-ui.sh --forward` cobre esse caso por `port-forward` em `localhost`.
+
+### 4.12 Consumo medido ao fim da rodada 2
 
 | Pod | Uso | Limite |
 |---|---|---|
@@ -732,8 +788,9 @@ Efeito medido: uso do ClickHouse de **855Mi para 354Mi**, uma queda de 59% sem n
 > Isto tem consequência direta para o E3: qualquer medição de memória do ClickHouse feita antes desta
 > correção estaria medindo, em boa parte, a instrumentação do próprio ClickHouse.
 
-**Pendência:** os dados já acumulados (7,9 M de linhas) continuam no PVC. Não crescem mais, mas ocupam
-disco e ainda podem ser mergeados uma última vez. Limpar exige `TRUNCATE`, que aguarda autorização.
+**Encerramento:** o congelamento foi confirmado por amostragem e o total em disco medido em **11,67 MiB**
+([T-E1-38](#411-verificações-de-encerramento-do-épico)). Limpar as tabelas antigas é opcional — o risco era
+de memória em merge, e esse acabou com a escrita.
 
 ### D13 — ConfigMap montada em `/opt/airflow/dags` quebra o walker de DAGs
 
@@ -790,6 +847,9 @@ ocasião. Nenhum atrapalha uma reexecução: todos os caminhos testados são ide
 |---|---|
 | `dm_acme.__rbac_probe`, `dm_globex.__rbac_probe` | `verify-rbac.sh` — recriados a cada execução |
 | `dm_acme.t_probe`, `dm_acme.t_probe_stg` | T-E1-19, o teste de `REPLACE PARTITION` |
+| `probe.fact_200_cep` em `dm_acme` (Postgres) | T-E1-24, a sonda do índice — 300 mil linhas sintéticas |
+| SparkApplication `smoke-clickhouse` e `-r2` a `-r6` | T-E1-32. Os pods `Error` das 5 tentativas falhas **foram removidos**; os CR continuam, todos em estado terminal |
+| Seis tabelas de system log no ClickHouse | 11,67 MiB, congeladas. Limpeza opcional |
 | Job `ch-rbac` | Tem `ttlSecondsAfterFinished: 300`; some sozinho |
 | Job `minio-provision` | Sem TTL; precisa de remoção manual para reexecutar |
 | `~/.datamart-poc-profile.state` | `profile.sh`, vazio |
