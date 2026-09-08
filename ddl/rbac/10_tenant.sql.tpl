@@ -32,6 +32,18 @@ GRANT SELECT ON dm_{{TENANT}}.* TO r_{{TENANT}}_ro;
 GRANT SELECT, INSERT, CREATE TABLE, DROP TABLE, ALTER MOVE PARTITION, ALTER DELETE
     ON dm_{{TENANT}}.* TO r_{{TENANT}}_loader;
 
+-- Tabelas de sistema que o connector Spark le antes de qualquer query, no
+-- ClickHouseCatalog.initialize e na inferencia de schema. So o connector as toca: pelo
+-- clickhouse-client o loader nunca precisa delas, e a falta aparece como Code 497.
+-- NAO conceder system.* inteiro: system.query_log nao tem filtro por permissao e
+-- exporia as queries dos outros tenants. As tres ultimas ja sao filtradas por acesso.
+GRANT SELECT ON system.clusters  TO r_{{TENANT}}_loader;
+GRANT SELECT ON system.macros    TO r_{{TENANT}}_loader;
+GRANT SELECT ON system.databases TO r_{{TENANT}}_loader;
+GRANT SELECT ON system.tables    TO r_{{TENANT}}_loader;
+GRANT SELECT ON system.columns   TO r_{{TENANT}}_loader;
+GRANT SELECT ON system.parts     TO r_{{TENANT}}_loader;
+
 CREATE USER IF NOT EXISTS u_{{TENANT}}_ro
     IDENTIFIED WITH sha256_password BY '{{PWD_RO}}'
     SETTINGS PROFILE 'p_{{TENANT}}_ro';

@@ -123,33 +123,72 @@ Deve listar `data-bee_replication/`, `business_datavault_data-bee/`, `gold_datav
 ### Ações
 
 1. Manter o chart `spark-operator/spark-operator` e o `infra/spark/operator-values.yaml` da V1.
-2. Construir a imagem a partir do `Dockerfile` do **honeycomb**, não do fork. O honeycomb já resolve os
-   jars por `ADD` em build-time — o incidente #5 do `TROUBLESHOOTING.md` (ivy falhando no Spark Operator
-   por `HOME=/nonexistent`) já está resolvido upstream.
-3. Acrescentar ao `Dockerfile` os jars do connector ClickHouse, no conjunto exato que a V1 provou contra o
-   incidente #11:
+2. **Não reconstruir o honeycomb.** A imagem publicada em
+   `hub.datawake.cloud/dw-dados/honeycomb:latest` já traz tudo o que a POC precisa:
+
+   | Componente | Versão na imagem |
+   |---|---|
+   | Spark | 3.5.8 (Scala 2.12, Hadoop 3.3.4) |
+   | Java | 17 |
+   | Python | 3.10.12 |
+   | Delta | 3.3.2 |
+   | hadoop-aws / aws-java-sdk-bundle | 3.3.4 / 1.12.262 |
+   | Aplicação | `/opt/spark/app` (`src/main`, `resources/queries`) |
+
+3. `images/spark/Dockerfile` vira um **overlay de 3 linhas** sobre essa imagem, acrescentando só o
+   connector ClickHouse — o único componente que a imagem de produção ainda não carrega:
    - `com.clickhouse.spark:clickhouse-spark-runtime-3.5_2.12:0.10.0`
    - `com.clickhouse:clickhouse-client:0.9.8`
    - `com.clickhouse:clickhouse-http-client:0.9.8`
    - `org.apache.httpcomponents.client5:httpclient5:5.2.1`
+4. `infra/spark/smoke/smoke_clickhouse.py` e `infra/spark/sparkapplication-smoke-clickhouse.yaml`:
+   exercitam `ClickHouseCatalog.initialize` e uma leitura, sem tocar em Delta nem em dado real.
+5. `infra/spark/spark-secrets.yaml` passa a expor `DATAMART_CH_*` em vez de `CLICKHOUSE_*` — corrige o
+   defeito **D2** ([ARQUITETURA §4](../ARQUITETURA.md#4-defeitos-verificados-no-ambiente)).
+
+> A especificação original mandava construir a imagem a partir do `Dockerfile` do honeycomb. Era
+> retrabalho: reproduzir localmente uma imagem que já existe publicada, e assumir o risco de ela sair
+> diferente da de produção. O overlay mantém a POC rodando **exatamente** o binário produtivo.
 
 ### Artefatos
 
-`spark-source-code/Dockerfile` (alterado em T2.1, jars aqui).
+`images/spark/Dockerfile` (reescrito), `infra/spark/smoke/smoke_clickhouse.py`,
+`infra/spark/sparkapplication-smoke-clickhouse.yaml`, `infra/spark/spark-secrets.yaml` (reescrito),
+`infra/spark/spark-rbac.yaml` (alterado).
 
 ### Aceite
 
 ```bash
-minikube image build -t honeycomb:poc -f spark-source-code/Dockerfile spark-source-code/
-docker run --rm honeycomb:poc ls /opt/spark/jars | grep -c clickhouse
+docker build -f images/spark/Dockerfile -t honeycomb:poc images/spark/
+minikube image load honeycomb:poc
+kubectl apply -f infra/spark/sparkapplication-smoke-clickhouse.yaml
+kubectl -n datamart get sparkapplication smoke-clickhouse \
+  -o jsonpath='{.status.applicationState.state}'
 ```
-Deve retornar `≥ 3`.
+Deve chegar a `COMPLETED`, com `[smoke] OK` no log do driver.
+
+Contar jars não é aceite: prova que o arquivo está no disco, não que o connector conversa com o servidor.
+O smoke roda como `u_acme_loader` e exercita o caminho inteiro — catálogo, autenticação, RBAC e leitura.
+
+### Notas de precisão
+
+- Copiar de `/tmp/.ivy2/jars/` e não de `find -name '*.jar'`: o diretório `cache/` guarda os **mesmos**
+  jars com outro nome, e cada um entraria duas vezes no classpath.
+- Nada de `chown -R /opt/spark/jars`: reescreve os 257 jars da base numa camada nova e engorda a imagem
+  em ~650 MB. `cp` como root já cria os jars legíveis por qualquer uid. Com isso o overlay custa **20 MB**.
+- `httpclient5` resolve para **5.4.4**, não para os 5.2.1 pedidos: o ivy escolhe a versão mais alta exigida
+  pelo `clickhouse-client:0.9.8`. O smoke valida a combinação real.
+- A Role do ServiceAccount `spark` precisa de `deletecollection` em `services` e `persistentvolumeclaims`:
+  o driver limpa esses recursos por `labelSelector` ao encerrar. Sem isso o job conclui, mas com
+  `Forbidden` no log e recursos órfãos.
 
 ### Riscos
 
 | Risco | Sinal | Mitigação |
 |---|---|---|
-| Incidente #11 (LZ4) sobre Java 17 | `IllegalArgumentException: Magic is not correct` no log do driver, na primeira escrita | Fallback `spark.sql.catalog.clickhouse.option.compress=false` — custa banda intra-cluster, irrelevante aqui. Fallback final: caminho Parquet + `s3()`, em [E2](E2-execucao.md) T2.3 |
+| Incidente #11 (LZ4) sobre Java 17 | `IllegalArgumentException: Magic is not correct` no `ClickHouseCatalog.initialize` | **Não reproduziu** contra o ClickHouse 24.8 com o conjunto de jars acima. O smoke é a prova, e roda em ~1 min |
+| CRD do Spark Operator defasado | Campo do manifesto ignorado em silêncio | Os CRD vieram da instalação anterior (2.5.0) e o chart agora é 2.5.2. Funcionou; ao subir de minor, remover os três CRD antes |
+| Registry inacessível | `docker pull` falha no passo 2 do bootstrap | A imagem já está local. O bootstrap só puxa se faltar |
 
 ---
 
@@ -214,7 +253,9 @@ Decisão detalhada em [ADR-003](../decisoes/ADR-003-rbac-multi-tenant.md).
    - `requests` `1Gi`/`500m` e `limits` `2304Mi`/`3`;
    - `max_server_memory_usage` 1,5 GiB e `mark_cache_size` 384 MiB — os defaults (90% da RAM vista e
      5 GiB, respectivamente) estouram sozinhos o limite do container;
-   - qualquer setting de sessão sob `profiles:`, **nunca** sob `settings:`.
+   - qualquer setting de sessão sob `profiles:`, **nunca** sob `settings:`;
+   - `configuration.files` desligando os system logs do proprio ClickHouse — ver
+     [D12](../TESTES.md#d12--os-system-logs-do-clickhouse-derrubam-o-servidor).
 2. `ddl/rbac/10_tenant.sql.tpl`, renderizado por tenant:
    ```sql
    CREATE DATABASE IF NOT EXISTS dm_{{TENANT}};
@@ -236,6 +277,10 @@ Decisão detalhada em [ADR-003](../decisoes/ADR-003-rbac-multi-tenant.md).
    GRANT SELECT ON dm_{{TENANT}}.* TO r_{{TENANT}}_ro;
    GRANT SELECT, INSERT, CREATE TABLE, DROP TABLE,
          ALTER MOVE PARTITION, ALTER DELETE ON dm_{{TENANT}}.* TO r_{{TENANT}}_loader;
+
+   -- exigidas pelo connector Spark; ver D11
+   GRANT SELECT ON system.{clusters,macros,databases,tables,columns,parts}
+         TO r_{{TENANT}}_loader;
 
    CREATE USER IF NOT EXISTS u_{{TENANT}}_ro IDENTIFIED WITH sha256_password BY '{{PWD_RO}}'
        DEFAULT ROLE r_{{TENANT}}_ro SETTINGS PROFILE p_{{TENANT}}_ro;
@@ -342,22 +387,28 @@ Retorna o documento com `filiais`, `tables` e `schedule_interval`.
    `redis.enabled`, `flower.enabled`, `statsd.enabled` e `triggerer.enabled` em `false`.
 2. **`postgresql.enabled: false`** e StatefulSet `postgres:16-alpine` próprio para o metadata DB, com
    Secret carregando a connection string em `data.metadataSecretName`.
-3. Imagem custom de três linhas: `FROM apache/airflow:2.11.2` mais `pip install pymongo`.
-4. DAGs e manifestos por ConfigMap, montados em `/opt/airflow/dags` e `/opt/airflow/dags/manifests`.
+3. **Nada de imagem custom.** `dw-dados/datawake-airflow:0.1.0` já é Airflow **2.11.2** com **pymongo
+   4.10.1**, e todos os imports da DAG produtiva resolvem nela. Mesma correção de T1.3: a imagem existe,
+   construir outra é retrabalho com risco de divergir da de produção.
+4. DAGs por ConfigMap, copiadas para um `emptyDir` por **initContainer**.
 5. Variable via env var `AIRFLOW_VAR_MONGODB_K8S_TEST` no scheduler e no webserver.
 6. Role e RoleBinding no namespace `datamart` para a SA **`airflow-scheduler`**:
-   - `sparkoperator.k8s.io` / `sparkapplications`: `create, get, list, watch, delete, patch`
+   - `sparkoperator.k8s.io` / `sparkapplications`: `create, get, list, watch, delete, patch, update`
    - core / `pods`, `pods/log`, `events`: `get, list, watch`
+7. `airflow/dags/smoke_control_plane.py`: prova Variable, pymongo, o contrato do control plane e o RBAC
+   do spark-operator, replicando os idiomas da DAG produtiva.
 
 ### Por que cada desvio do default
 
 | Item | Motivo |
 |---|---|
 | `postgresql.enabled: false` | O subchart é Bitnami; a mudança de hospedagem das imagens quebra o pull. Sinal: `ImagePullBackOff` em `airflow-postgresql-0` |
-| Imagem custom | A DAG produtiva importa `pymongo` diretamente, não o provider `apache-airflow-providers-mongo` |
-| ConfigMap em vez de `minikube mount` | `minikube mount` é um processo de longa duração que morre com o terminal no WSL2. Limite de 1 MiB por ConfigMap, folgado aqui |
+| Imagem de produção, sem build | Já traz Airflow 2.11.2 e pymongo. A DAG produtiva importa `pymongo` direto, não o provider |
+| ConfigMap em vez de `minikube mount` | `minikube mount` é um processo de longa duração que morre com o terminal no WSL2 |
+| **initContainer + `emptyDir`** | Montar a ConfigMap DIRETO em `/opt/airflow/dags` quebra o walker de DAGs — ver [D13](../TESTES.md#d13--configmap-montada-em-optairflowdags-quebra-o-walker-de-dags) |
 | Variable por env var | Backend de env var não escreve no metadata DB, então o ambiente é reproduzível. **O nome precisa ser o exato de produção** para que o arquivo da DAG seja byte-idêntico ao de `dtlk-airflow-pipeline/dags/` |
 | SA `airflow-scheduler` | Com `LocalExecutor` **não existe deployment de workers** — as tasks rodam dentro do pod do scheduler |
+| `webserverSecretKey` literal | Sem isso cada `helm upgrade` rotaciona a chave e invalida as sessões da UI |
 
 > Produção usa `CeleryExecutor` e git-sync. Ambos os desvios são de recurso e de conveniência local, e
 > estão declarados aqui para que a apresentação não os apresente como equivalência.
@@ -365,32 +416,41 @@ Retorna o documento com `filiais`, `tables` e `schedule_interval`.
 ### Artefatos
 
 `infra/airflow/values.yaml`, `infra/airflow/postgres-metadata.yaml`, `infra/airflow/rbac-spark.yaml`,
-`images/airflow/Dockerfile`.
+`airflow/dags/smoke_control_plane.py`. **Não há `images/airflow/Dockerfile`** — a imagem de produção
+basta.
 
 ### Aceite
 
 ```bash
-kubectl -n airflow exec deploy/airflow-scheduler -- airflow dags list-import-errors
+kubectl -n airflow exec statefulset/airflow-scheduler -c scheduler -- \
+  airflow dags list-import-errors
 ```
-Saída vazia.
+Saída `No data found`.
+
+O scheduler é **StatefulSet** neste chart, não Deployment, e o pod tem dois containers — daí o
+`statefulset/` e o `-c scheduler`. Um `deploy/airflow-scheduler` falha com `NotFound`.
+
+Um DagBag vazio também não tem erro de import, então o aceite se apoia na `smoke_control_plane`: ela é
+carregada, roda e prova o caminho inteiro.
 
 ### Riscos
 
 | Risco | Sinal | Mitigação |
 |---|---|---|
 | Subchart Bitnami não puxa | `ImagePullBackOff` em `airflow-postgresql-0` | `postgresql.enabled=false` |
-| `pymongo` ausente | `ModuleNotFoundError: pymongo` em `list-import-errors` | Imagem custom |
-| RoleBinding para a SA errada | `sparkapplications... is forbidden: User "system:serviceaccount:airflow:airflow-worker" cannot create` | RoleBinding para `airflow-scheduler` |
+| `pymongo` ausente | `ModuleNotFoundError: pymongo` em `list-import-errors` | A imagem de produção já o traz |
+| RoleBinding para a SA errada | `sparkapplications... is forbidden: User "system:serviceaccount:airflow:airflow-worker" cannot create` | RoleBinding para `airflow-scheduler`; a task `checar_rbac_spark` prova |
+| ConfigMap montada direto em `dags/` | `Detected recursive loop when walking DAG directory` | initContainer copiando para `emptyDir` |
 
 ---
 
 ## Checklist Go/No-Go do épico
 
-- [ ] `PROFILE=full bash scripts/bootstrap.sh` termina sem erro
+- [ ] `bash scripts/bootstrap.sh` (perfil `small`) termina sem erro
 - [ ] `kubectl -n datamart get pods` — todos `Running`, nenhum `CrashLoopBackOff`
 - [ ] `mc ls poc/datamart/` lista os 4 prefixos
-- [ ] `docker run --rm honeycomb:poc ls /opt/spark/jars | grep -c clickhouse` ≥ 3
+- [ ] o smoke do connector ClickHouse chega a `COMPLETED`
 - [ ] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam
 - [ ] `mongosh` retorna o documento de control plane dos 2 tenants
-- [ ] `airflow dags list-import-errors` vazio
+- [ ] `airflow dags list-import-errors` devolve `No data found` e a `smoke_control_plane` roda com sucesso
 - [ ] `bash scripts/profile.sh quiesce && bash scripts/profile.sh resume` funciona nos dois sentidos

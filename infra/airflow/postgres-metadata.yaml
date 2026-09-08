@@ -1,0 +1,89 @@
+# Metadata DB do Airflow, separado do Postgres do braço de comparação.
+# O subchart do próprio helm chart do Airflow é Bitnami, e a mudança de hospedagem
+# das imagens quebra o pull — sinal: ImagePullBackOff em airflow-postgresql-0.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: airflow-metadata
+  namespace: airflow
+type: Opaque
+stringData:
+  # Chave `connection` é o nome que o chart procura em data.metadataSecretName.
+  connection: postgresql://airflow:airflow_poc@airflow-postgres.airflow.svc.cluster.local:5432/airflow
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: airflow-postgres-creds
+  namespace: airflow
+type: Opaque
+stringData:
+  POSTGRES_USER: airflow
+  POSTGRES_PASSWORD: airflow_poc
+  POSTGRES_DB: airflow
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-postgres
+  namespace: airflow
+spec:
+  clusterIP: None
+  selector:
+    app: airflow-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: airflow-postgres
+  namespace: airflow
+spec:
+  serviceName: airflow-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-postgres
+  template:
+    metadata:
+      labels:
+        app: airflow-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: airflow-postgres-creds
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "192Mi"
+            limits:
+              cpu: "500m"
+              memory: "384Mi"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "airflow", "-d", "airflow"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 4Gi
