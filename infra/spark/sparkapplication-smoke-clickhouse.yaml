@@ -1,0 +1,48 @@
+# Smoke do connector ClickHouse: valida ClickHouseCatalog.initialize e uma leitura,
+# sem tocar em Delta nem em dado real. É o aceite de T1.3.
+# O script vem do ConfigMap ch-smoke, criado em scripts/bootstrap.sh a partir de
+# infra/spark/smoke/ (fonte única).
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: smoke-clickhouse
+  namespace: datamart
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: honeycomb:poc
+  # A imagem é carregada por `minikube image load`; não existe registry alcançável daqui.
+  imagePullPolicy: Never
+  mainApplicationFile: local:///opt/smoke/smoke_clickhouse.py
+  sparkVersion: "3.5.8"
+  restartPolicy:
+    type: Never
+  volumes:
+    - name: smoke
+      configMap:
+        name: ch-smoke
+  driver:
+    cores: 1
+    memory: "1g"
+    memoryOverhead: "384m"
+    serviceAccount: spark
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+    volumeMounts:
+      - name: smoke
+        mountPath: /opt/smoke
+        readOnly: true
+  executor:
+    cores: 1
+    instances: 1
+    memory: "1g"
+    memoryOverhead: "384m"
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+    volumeMounts:
+      - name: smoke
+        mountPath: /opt/smoke
+        readOnly: true

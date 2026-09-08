@@ -27,6 +27,21 @@ spec:
       # limite de memória nenhum, e não avisa.
       podTemplate: default
   configuration:
+    files:
+      # Os system logs do proprio ClickHouse consomem o orcamento de memoria: em 4h de
+      # ociosidade o asynchronous_metric_log juntou 7,9 milhoes de linhas, e o merge dele
+      # pediu 872 MiB contra o teto de 1,5 GiB — OOMKill do servidor, sem query nenhuma.
+      # query_log fica intacto: o E3 correlaciona query_id nele, e o TTL default do
+      # proprio ClickHouse ja o limita. O resto sai.
+      config.d/system_logs.xml: |
+        <clickhouse>
+          <asynchronous_metric_log remove="1"/>
+          <metric_log remove="1"/>
+          <trace_log remove="1"/>
+          <text_log remove="1"/>
+          <error_log remove="1"/>
+          <processors_profile_log remove="1"/>
+        </clickhouse>
     clusters:
       - name: datamart
         layout:
@@ -43,8 +58,8 @@ spec:
       default/optimize_on_insert: 0
     settings:
       # O default do mark_cache é 5 GiB e o de max_server_memory_usage é 90% da RAM
-      # vista pelo processo: qualquer um dos dois estoura sozinho o limite de 2,25Gi.
-      max_server_memory_usage: 1610612736
+      # vista pelo processo: qualquer um dos dois estoura sozinho o limite do container.
+      max_server_memory_usage: 2147483648
       mark_cache_size: 402653184
       # O produto dos dois é validado na subida contra
       # number_of_free_entries_in_pool_to_execute_optimize_entire_partition (25):
@@ -79,4 +94,4 @@ spec:
                   memory: "1Gi"
                 limits:
                   cpu: "3"
-                  memory: "2304Mi"
+                  memory: "3Gi"

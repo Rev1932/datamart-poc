@@ -12,9 +12,9 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 6 de 19 tasks fechadas (T0.1, T1.1, T1.2, T1.4, T1.5, T1.6)
+**Progresso:** 7 de 19 tasks fechadas (T0.1, T1.1 a T1.6). Falta T1.7 para fechar o Épico 1.
 
-Execução dos testes registrada em [TESTES.md](TESTES.md) — 32 testes, 27 verdes, 1 defeito aberto.
+Execução dos testes registrada em [TESTES.md](TESTES.md) — 36 testes, 30 verdes, 1 defeito aberto.
 
 ---
 
@@ -73,12 +73,25 @@ Aceite: os 4 prefixos listados, incluindo `stage/` — [T-E1-10](TESTES.md#43-t1
 - [x] Manter `minio-standalone.yaml`
 - [x] Prefixo `stage/` no `bucket-provision-job.yaml`
 
-### ⬜ T1.3 — Spark Operator e imagem honeycomb
-Aceite: `ls /opt/spark/jars | grep -c clickhouse` ≥ 3
+### ✅ T1.3 — Spark Operator e imagem honeycomb
+Aceite: o smoke do connector chega a `COMPLETED` —
+[T-E1-32](TESTES.md#47-t13--spark-operator-e-imagem-honeycomb)
 
-- [ ] Manter chart e `operator-values.yaml`
-- [ ] Build a partir do `Dockerfile` do honeycomb
-- [ ] Jars do connector ClickHouse por `ADD`
+- [x] Chart `spark-operator` 2.5.2 e `operator-values.yaml`
+- [x] `images/spark/Dockerfile` — overlay sobre `hub.datawake.cloud/dw-dados/honeycomb:latest`,
+      **sem reconstruir o honeycomb**
+- [x] Jars do connector ClickHouse (custo: 20 MB sobre a base)
+- [x] `infra/spark/smoke/smoke_clickhouse.py` e `sparkapplication-smoke-clickhouse.yaml`
+- [x] `infra/spark/spark-secrets.yaml` com `DATAMART_CH_*` (corrige **D2**)
+- [x] `deletecollection` na Role do ServiceAccount `spark` (`infra/spark/spark-rbac.yaml`)
+
+Contar jars foi descartado como aceite: prova que o arquivo está no disco, não que o connector conversa
+com o servidor. O smoke roda como `u_acme_loader` e cobre catálogo, autenticação, RBAC e leitura.
+**O incidente #11 (LZ4) não reproduziu.** Dois defeitos no caminho:
+[D11](TESTES.md#d11--rbac-por-database-não-basta-para-o-connector-spark) (o RBAC de T1.5 não cobria as
+tabelas de `system` que o connector lê — e o aceite de T1.5 passou mesmo assim) e
+[D12](TESTES.md#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) (os system logs do ClickHouse
+somaram 7,9 M de linhas em 4h ociosas e derrubaram o servidor por OOM).
 
 ### ✅ T1.4 — PostgreSQL (corrige **D3**)
 Aceite: `EXPLAIN` sai de `Parallel Seq Scan` (3207 buffers) para `Index Scan` (607) —
@@ -103,6 +116,8 @@ Aceite: `verify-rbac.sh` 4/4 — [T-E1-16](TESTES.md#44-t15--clickhouse-multi-te
 - [x] Reescrever `chi-datamart.yaml`: só `dm_admin`, `limits` 2304Mi, tetos de memória do servidor
 - [x] `ddl/rbac/10_tenant.sql.tpl`
 - [x] `infra/clickhouse/job-rbac.yaml` — Job idempotente para 2 tenants (`acme`, `globex`)
+- [x] `GRANT SELECT` nas 6 tabelas de `system` que o connector Spark lê (**D11**)
+- [x] `configuration.files` desligando os system logs do ClickHouse (**D12**)
 - [x] `scripts/verify-rbac.sh` com asserções negativas
 - [x] Encadear no `scripts/bootstrap.sh` — passo 7 (RBAC) e passo 8 (tabelas de fato)
 

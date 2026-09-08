@@ -210,7 +210,7 @@ Contrato de dimensionamento para T1.4, T1.6 e T1.7. Não são sugestões: são o
 | Serviço | requests (mem / cpu) | limits (mem / cpu) | Trava adicional |
 |---|---|---|---|
 | MinIO | 512Mi / 250m | 1Gi / 1 | valor já em uso e testado; não foi reduzido |
-| ClickHouse | 1Gi / 500m | 2304Mi / 3 | `max_server_memory_usage` 1,5 GiB; `mark_cache_size` 384 MiB |
+| ClickHouse | 1Gi / 500m | 3Gi / 3 | `max_server_memory_usage` 2 GiB; `mark_cache_size` 384 MiB; system logs desligados |
 | PostgreSQL (braço) | 640Mi / 300m | 1792Mi / 2 | `shared_buffers` 384MB, `effective_cache_size` 1GB |
 | MongoDB | 256Mi / 100m | 640Mi / 500m | `--wiredTigerCacheSizeGB 0.25` fixo — é o **mínimo** aceito pelo WiredTiger |
 | Airflow scheduler | 640Mi / 300m | 1280Mi / 2 | LocalExecutor: as tasks rodam neste pod |
@@ -218,7 +218,7 @@ Contrato de dimensionamento para T1.4, T1.6 e T1.7. Não são sugestões: são o
 | Airflow metadata PG | 192Mi / 100m | 384Mi / 500m | — |
 | spark-operator | 128Mi / 100m | 256Mi / 500m | — |
 | clickhouse-operator | 128Mi / 100m | 256Mi / 500m | — |
-| **soma dos permanentes** | **3,75 GiB / 1850m** | 8,5 GiB / 11,5 | — |
+| **soma dos permanentes** | **3,75 GiB / 1850m** | 9,25 GiB / 11,5 | — |
 | kube-system | ~0,4 GiB / 600m | — | coredns, provisioner, metrics-server |
 
 Spark é transitório e só existe durante a carga:
@@ -232,7 +232,7 @@ O executor caiu de 1536m para 1g ao fixar o perfil `small`. Um executor apertado
 demora mais; ele não quebra. E a POC mede latência de leitura no ClickHouse, não velocidade de carga — o
 custo cai onde não afeta a tese.
 
-> **A soma dos `limits` (8,5 GiB) encosta no teto do cgroup de propósito.** Limite não é reserva: serve
+> **A soma dos `limits` (9,25 GiB) passa do teto do cgroup de propósito.** Limite não é reserva: serve
 > para matar quem fugir do envelope, não para alocar. O que precisa caber é a soma dos **requests**.
 
 ### Os dois picos
@@ -243,6 +243,10 @@ Ingestão e benchmark nunca acontecem juntos — é o que torna 8 GiB suficiente
 |---|---|---|---|
 | Ingestão | permanentes + Spark | **6,9 GiB / 4450m** | 1,1 GiB |
 | Benchmark | permanentes − Airflow − MongoDB, Spark parado | **3,0 GiB / 1950m** | 5,0 GiB |
+
+O teto do ClickHouse subiu de 2304Mi para 3Gi depois que os system logs do próprio servidor o
+derrubaram por OOM — ver [D12](TESTES.md#d12--os-system-logs-do-clickhouse-derrubam-o-servidor). Com os
+logs desligados o uso caiu de 855Mi para 354Mi; a folga fica para os merges do benchmark.
 
 O teto do MongoDB subiu de 384Mi para 640Mi ao ser construído: `wiredTigerCacheSizeGB` tem **mínimo de
 0,25 GB**, e 256 MiB de cache mais o heap do mongod não cabem em 384Mi. O número anterior era estimativa

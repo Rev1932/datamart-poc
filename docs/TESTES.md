@@ -2,11 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.2 |
+| Versão | 1.3 |
 | Data da execução | 2026-09-08 |
 | Branch | `feat/v2-olap` |
-| Escopo | E1/T1.1, T1.2, T1.5 (rodada 1) e T1.4, T1.6 (rodada 2) |
-| Resultado | **32 testes** · 27 verdes · 4 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
+| Escopo | E1/T1.1, T1.2, T1.5 (rodada 1), T1.4, T1.6 (rodada 2) e T1.3 (rodada 3) |
+| Resultado | **36 testes** · 30 verdes · 5 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
 | Progresso das tasks | [TODO.md](TODO.md) — este arquivo registra **execução**, não estado |
 
 Este arquivo é o registro de **execução de teste**. Cada rodada é organizada por épico, e dentro do épico
@@ -313,7 +313,7 @@ O formato do documento saiu da **leitura das DAGs produtivas**, não de suposiç
 > não materializa nada. As DAGs de gold da POC são de destino único, então essa validação precisa sair na
 > cópia, ou elas falham antes de subir qualquer pod.
 
-### 4.7 Consumo medido ao fim da rodada
+### 4.9 Consumo medido ao fim da rodada 2
 
 | Pod | Uso | Limite |
 |---|---|---|
@@ -326,11 +326,79 @@ O formato do documento saiu da **leitura das DAGs produtivas**, não de suposiç
 O MongoDB em 202Mi confirma que 384Mi teria sido apertado e que 640Mi tem folga — o número antigo era
 estimativa minha, este é medição.
 
-### 4.8 Tasks não executáveis
+### 4.7 T1.3 — Spark Operator e imagem honeycomb
+
+| ID | O que prova | Resultado |
+|---|---|---|
+| T-E1-29 | O overlay entrega os jars do connector sem inchar a imagem | ✅ |
+| T-E1-30 | A aplicação do honeycomb sai intacta do overlay | ✅ |
+| T-E1-31 | Spark Operator 2.5.2 reconcilia `SparkApplication` no namespace `datamart` | ✅ |
+| T-E1-32 | **Aceite:** o smoke do connector chega a `COMPLETED` | 🔧 [D11](#d11--rbac-por-database-não-basta-para-o-connector-spark) + [D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) |
+
+T-E1-29 — sete jars no classpath, uma cópia de cada, e o custo do overlay:
+
+```
+com.clickhouse.spark_clickhouse-spark-runtime-3.5_2.12-0.10.0.jar
+com.clickhouse_clickhouse-client-0.9.8.jar
+com.clickhouse_clickhouse-data-0.9.8.jar
+com.clickhouse_clickhouse-http-client-0.9.8.jar
+org.apache.httpcomponents.client5_httpclient5-5.4.4.jar
+org.apache.httpcomponents.core5_httpcore5-5.3.4.jar
+org.apache.httpcomponents.core5_httpcore5-h2-5.3.4.jar
+
+base honeycomb:latest  1,73 GB  ->  honeycomb:poc  1,75 GB
+```
+
+Duas iterações até chegar nesses 20 MB. Na primeira, `find /tmp/.ivy2 -name '*.jar'` copiou **cada jar
+duas vezes** — o diretório `cache/` guarda os mesmos artefatos com outro nome. Na segunda, um
+`chown -R 185:185 /opt/spark/jars` reescreveu os 257 jars da base numa camada nova e a imagem foi para
+2,4 GB. O `chown` não era necessário: `cp` como root já cria jars 644, legíveis por qualquer uid.
+
+T-E1-32 é o aceite, e vale mais que contar arquivos. Como `u_acme_loader`, exercitando catálogo,
+autenticação, RBAC e leitura:
+
+```
+[smoke] catalogo=clickhouse database=dm_acme host=clickhouse-datamart.datamart.svc.cluster.local:8123
+[smoke] SHOW TABLES devolveu 3 tabela(s):
+[smoke]   Row(namespace='dm_acme', tableName='__rbac_probe', isTemporary=False)
+[smoke]   Row(namespace='dm_acme', tableName='t_probe', isTemporary=False)
+[smoke]   Row(namespace='dm_acme', tableName='t_probe_stg', isTemporary=False)
+[smoke] SELECT count() em clickhouse.dm_acme.__rbac_probe = 0
+[smoke] OK
+```
+
+**O incidente #11 não reproduziu.** `ClickHouseCatalog.initialize` completou contra o ClickHouse 24.8 com
+o conjunto de jars alinhado — nenhum `Magic is not correct`. Era o risco número um desta task.
+
+Foram **seis execuções** até o verde, e cada falha foi um achado diferente:
+
+| # | Onde parou | Causa |
+|---|---|---|
+| r1 | `system.clusters` | [D11](#d11--rbac-por-database-não-basta-para-o-connector-spark) |
+| r2 | `system.macros` | D11 |
+| r3 | `UnknownHostException` | [D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) — o ClickHouse estava OOMKilled |
+| r4 | `count()` | sintaxe ClickHouse num `spark.sql()`, que passa pelo parser do Spark |
+| r5 | `system.parts` | D11 |
+| r6 | — | **COMPLETED** |
+
+**Estado da task: ✅.**
+
+### 4.8 Consumo depois de desligar os system logs
+
+| Pod | Antes | Depois |
+|---|---|---|
+| ClickHouse | 855Mi | **354Mi** |
+| PostgreSQL | 243Mi | 126Mi |
+| MongoDB | 202Mi | 204Mi |
+| MinIO | 109Mi | 120Mi |
+| nó | 3,49 GiB | 3,73 GiB (com o Spark Operator a mais) |
+
+O ClickHouse caiu **59%** só por parar de instrumentar a si mesmo.
+
+### 4.10 Tasks não executáveis
 
 | Task | Por quê |
 |---|---|
-| T1.3 — Spark Operator e imagem | Não implementada. Depende de acesso ao `Dockerfile` do honeycomb |
 | T1.7 — Airflow | Não implementada |
 
 ---
@@ -373,6 +441,8 @@ braços, sem o qual nenhum número de performance pode ser publicado).
 | [D8](#d8--statefulset-com-pod-nunca-ready-não-sai-do-lugar-com-kubectl-apply) | média | comportamento do Kubernetes | contornado, documentado |
 | [D9](#d9--probe-lento-derruba-o-dns-do-service-headless) | média | introduzido nesta branch | corrigido, verificado em T-E1-25 |
 | [D10](#d10--docker-entrypoint-initdbd-é-pulado-em-silêncio-num-pvc-reusado) | média | padrão sugerido na especificação | corrigido, verificado em T-E1-23 |
+| [D11](#d11--rbac-por-database-não-basta-para-o-connector-spark) | alta | lacuna do template de T1.5 | corrigido, verificado em T-E1-32 |
+| [D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) | alta | default do ClickHouse | corrigido, verificado em T-E1-32 |
 
 ### D4 — O nó anuncia a capacidade do host, não a do cgroup
 
@@ -538,6 +608,70 @@ silêncio, e o serviço fica saudável.
 **Correção:** `infra/postgres/job-init.yaml`, Job idempotente, simétrico ao `job-rbac.yaml` do ClickHouse.
 O SQL vive em `ddl/postgres/01_tenants.sql` — arquivo único, montado por ConfigMap gerada dele. Roda em
 qualquer estado do volume e pode ser reaplicado.
+
+### D11 — RBAC por database não basta para o connector Spark
+
+**Severidade: alta. Lacuna do template de T1.5**, invisível para o aceite daquela task.
+
+O template concedia privilégios apenas em `dm_<tenant>.*`. O connector ClickHouse-Spark lê tabelas de
+`system` **antes** de qualquer query do usuário, e falha com `Code 497` na primeira delas:
+
+```
+DB::Exception: u_acme_loader: Not enough privileges. To execute this query, it's necessary
+to have the grant SELECT(cluster, shard_num, ...) ON system.clusters. (ACCESS_DENIED)
+```
+
+Descobertas uma por execução, em três rodadas do smoke: `system.clusters`, `system.macros` e
+`system.parts`. Concedidas junto, por vir do mesmo caminho: `system.databases`, `system.tables` e
+`system.columns`.
+
+> **O aceite de T1.5 passou com o RBAC quebrado.** As quatro asserções de `verify-rbac.sh` usam
+> `clickhouse-client`, que nunca toca essas tabelas. O caminho que a POC de fato usa — o connector — só
+> foi exercitado em T1.3. Um teste que não percorre o caminho real aprova um sistema que não funciona.
+
+**Correção:** seis `GRANT SELECT ON system.<tabela>` no template, aplicados ao papel de loader.
+
+**Por que não `GRANT SELECT ON system.*`:** `system.query_log` **não** tem filtro por permissão. Um tenant
+leria as queries dos outros — vazamento de isolamento, justamente o que a POC quer demonstrar. As seis
+tabelas concedidas são de topologia e metadados; `tables`, `columns`, `databases` e `parts` já são
+filtradas por direito de acesso.
+
+### D12 — Os system logs do ClickHouse derrubam o servidor
+
+**Severidade: alta. Comportamento default do ClickHouse**, agravado por container pequeno.
+
+Em cerca de quatro horas de cluster **ocioso**, sem uma única query de negócio:
+
+| Tabela | Linhas acumuladas |
+|---|---|
+| `system.asynchronous_metric_log` | **7.936.382** |
+| `system.trace_log` | 273.282 |
+| `system.text_log` | 44.000 |
+| `system.metric_log` | 13.797 |
+| `system.query_log` | 278 |
+
+O merge de background da primeira pediu **872 MiB** contra o teto de 1,5 GiB:
+
+```
+Code: 241. Memory limit (total) exceeded: would use 1.53 GiB, maximum: 1.50 GiB
+MergeTreeBackgroundExecutor: {...::202609_1_1758_308}
+```
+
+O container foi `OOMKilled` seis vezes (`exitCode 137`). O efeito colateral fecha o círculo com
+[D9](#d9--probe-lento-derruba-o-dns-do-service-headless): o pod perde a prontidão, o Service headless
+para de publicar endpoint, e o smoke do Spark falha com `UnknownHostException` — a três saltos da causa.
+
+**Correção:** `configuration.files` no CHI removendo `asynchronous_metric_log`, `metric_log`, `trace_log`,
+`text_log`, `error_log` e `processors_profile_log`. **`query_log` fica** — o E3 correlaciona `query_id`
+nele. Teto do container de 2304Mi para 3Gi e `max_server_memory_usage` de 1,5 para 2 GiB, como folga.
+
+Efeito medido: uso do ClickHouse de **855Mi para 354Mi**, uma queda de 59% sem nenhuma carga.
+
+> Isto tem consequência direta para o E3: qualquer medição de memória do ClickHouse feita antes desta
+> correção estaria medindo, em boa parte, a instrumentação do próprio ClickHouse.
+
+**Pendência:** os dados já acumulados (7,9 M de linhas) continuam no PVC. Não crescem mais, mas ocupam
+disco e ainda podem ser mergeados uma última vez. Limpar exige `TRUNCATE`, que aguarda autorização.
 
 ---
 
