@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.6 |
+| Versão | 1.7 |
 | Data da execução | 2026-09-08 |
 | Branch | `feat/v2-olap` |
 | Escopo | **Épico 1 completo** — T1.1 a T1.7, em quatro rodadas |
@@ -27,6 +27,7 @@ e como. Uma task marcada ✅ no TODO tem obrigatoriamente uma linha verde aqui.
 8. [O que NÃO foi testado](#8-o-que-não-foi-testado)
 9. [Artefatos deixados no cluster](#9-artefatos-deixados-no-cluster)
 10. [Ações executadas fora da bateria](#10-ações-executadas-fora-da-bateria)
+11. [Auditoria de encerramento do Épico 1](#12-auditoria-de-encerramento-do-épico-1)
 
 ---
 
@@ -888,7 +889,7 @@ Sem isto, os resultados acima valem menos do que parecem.
 | `profile.sh quiesce` com workload real | Airflow e MongoDB não existem | O `scale --replicas=0` e a restauração nunca escalaram nada de verdade |
 | `quiesce` bloqueando por Spark ativo | Não há Spark Operator utilizável | Só a lógica de filtro foi testada, sinteticamente |
 | Comportamento sob pressão de memória | Nada consumiu o nó | D4 foi medido, mas o OOM que ele prevê não foi provocado |
-| `bootstrap.sh` de ponta a ponta | Passos 2, 5 e 8 dependem de tasks não implementadas | A ordem entre passos nunca foi exercitada em sequência |
+| `bootstrap.sh` de ponta a ponta | A stack subiu passo a passo, cada um com seu aceite | **A reprodutibilidade da POC segue não verificada.** É o único item aberto do Go/No-Go do E1 |
 | Qualquer coisa de E2 e E3 | Nada implementado | Tudo |
 | Recuperação do RBAC em réplica nova | 1 réplica só | O item 3 do [ADR-003](decisoes/ADR-003-rbac-multi-tenant.md) segue sendo teoria |
 
@@ -953,6 +954,66 @@ Memória do nó depois da remoção: **2,81 GiB de 8,00 GiB (35%)**. Note que `d
 cgroup real, ao contrário de `kubectl top` — é a ferramenta certa sob [D4](#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup).
 
 ---
+---
+
+## 12. Auditoria de encerramento do Épico 1
+
+Varredura em busca de pendência **perdida** — não do que está aberto no TODO, mas do que ninguém está
+olhando. Quatro achados, todos corrigidos.
+
+| # | Achado | Como apareceu |
+|---|---|---|
+| A1 | `bootstrap.sh` **não é idempotente** no passo do smoke | Leitura do script contra o estado real do cluster |
+| A2 | Manifestos e scripts da V1 apontam para imagem inexistente | Varredura de arquivos versionados que nenhum documento menciona |
+| A3 | Checklist Go/No-Go do E1 todo desmarcado, com M1 já ✅ | Comparação entre `TODO.md` e `E1-infraestrutura.md` |
+| A4 | Referência morta a `infra/postgres/postgres-config.yaml` | Varredura de caminhos citados nos docs contra o disco |
+
+### A1 — `bootstrap.sh` abortaria num cluster saudável
+
+O passo 11 fazia `kubectl apply` da `SparkApplication` do smoke e depois lia o estado. Num ambiente onde
+o CR já existe em estado terminal — que é o caso agora, `smoke-clickhouse` em `FAILED` desde a primeira
+tentativa —, o `apply` vira **no-op** e a espera lê o estado **velho**. O bootstrap abortaria com
+"smoke do connector falhou" num ambiente perfeitamente saudável.
+
+**Correção:** o passo passou a usar `submit_spark` de `scripts/_lib.sh`, que faz `delete --ignore-not-found`
+antes do `apply`. Efeito colateral bem-vindo: `_lib.sh` deixou de ser órfão na V2.
+
+> É a mesma família dos defeitos D5, D10 e D11: o comando é aceito, não dá erro, e não faz o que parece.
+
+### A2 — Legado da V1 apontando para imagem que não existe
+
+`infra/spark/sparkapplication-{ingest,gold,normalize}.yaml` referenciam `datamart-spark:poc`. A V2
+substituiu essa imagem por `honeycomb:poc` em T1.3, e eu ajustei a **memória** desses manifestos sem
+corrigir a **imagem**. Os `scripts/run-*.sh` que os submetem herdaram o problema.
+
+**Correção:** cabeçalho de legado nos seis arquivos, e os `run-*.sh` **abortam com exit 1** e uma mensagem
+que explica o quê e o porquê, em vez de estourar num `ErrImageNeverPull` obscuro. Saem quando
+[E2](epicos/E2-execucao.md) T2.6 entregar os manifestos novos.
+
+### A3 — Duas verdades entre TODO e especificação
+
+`TODO.md` marcava **M1 ✅** enquanto o checklist Go/No-Go do E1 estava com os oito itens em aberto. Sete
+deles eu havia executado e registrado aqui; o oitavo, não.
+
+**Correção:** sete marcados com o ID do teste que os provou. O primeiro — `bootstrap.sh` de ponta a ponta —
+**fica aberto de propósito**, porque de fato nunca rodou: a stack subiu passo a passo. É a afirmação de
+reprodutibilidade da POC, e ela segue não verificada.
+
+### A4 — Referência morta
+
+A lista de artefatos de T1.4 ainda citava `infra/postgres/postgres-config.yaml`, a ConfigMap de tuning
+abandonada quando o [D7](#d7--argumento-inválido-no-primeiro-boot-envenena-o-pgdata) obrigou a trocar por
+argumentos `-c`. Substituída por `infra/postgres/job-init.yaml`, que existe.
+
+### O que a varredura confirmou estar íntegro
+
+| Verificação | Resultado |
+|---|---|
+| Checkboxes abertos no TODO | 41, **todos de E2 e E3** — nenhum de E1 |
+| `TODO`/`FIXME`/`XXX` no código | nenhum |
+| Âncoras internas em todos os documentos | todas resolvem |
+| Caminhos citados nos docs contra o disco | só os de E2/E3, esperados |
+| Arquivos versionados sem menção em doc | só o legado da V1, agora marcado |
 
 *Vive em `docs/TESTES.md`. Incrementar a versão a cada nova rodada de execução, acrescentando uma seção
 por épico exercitado. Um defeito só sai de §7 quando existir um teste verde que prove a correção.*

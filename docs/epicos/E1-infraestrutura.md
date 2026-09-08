@@ -4,7 +4,7 @@
 |---|---|
 | Versão | 1.0 |
 | Data | 2026-09-04 |
-| Status | Em andamento — estado por task em [../TODO.md](../TODO.md) |
+| Status | **Completo** — as 7 tasks fechadas com aceite executado. Estado por task em [../TODO.md](../TODO.md) |
 | Objetivo | `bash scripts/bootstrap.sh` sobe a stack completa, verificável serviço a serviço |
 | Depende de | Nada. É o primeiro épico |
 | Bloqueia | E2 inteiro |
@@ -242,7 +242,7 @@ medida vale mais do que mais um fator 2× na barra do ClickHouse. Custa uma DDL 
 
 ### Artefatos
 
-`infra/postgres/postgres-statefulset.yaml`, `infra/postgres/postgres-config.yaml`,
+`infra/postgres/postgres-statefulset.yaml`, `infra/postgres/job-init.yaml`,
 `ddl/postgres/02_indices.sql`, `ddl/postgres/03_pg_tuned.sql`. Ambos rodam **depois** da carga, nessa ordem.
 
 ### Aceite
@@ -458,11 +458,23 @@ carregada, roda e prova o caminho inteiro.
 
 ## Checklist Go/No-Go do épico
 
-- [ ] `bash scripts/bootstrap.sh` (perfil `small`) termina sem erro
-- [ ] `kubectl -n datamart get pods` — todos `Running`, nenhum `CrashLoopBackOff`
-- [ ] `mc ls poc/datamart/` lista os 4 prefixos
-- [ ] o smoke do connector ClickHouse chega a `COMPLETED`
-- [ ] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam
-- [ ] `mongosh` retorna o documento de control plane dos 2 tenants
-- [ ] `airflow dags list-import-errors` devolve `No data found` e a `smoke_control_plane` roda com sucesso
-- [ ] `bash scripts/profile.sh quiesce && bash scripts/profile.sh resume` funciona nos dois sentidos
+- [ ] `bash scripts/bootstrap.sh` (perfil `small`) termina sem erro — **nunca executado de ponta a ponta**
+- [x] `kubectl get pods` — nenhum `CrashLoopBackOff`
+- [x] `mc ls poc/datamart/` lista os 4 prefixos — T-E1-10
+- [x] o smoke do connector ClickHouse chega a `COMPLETED` — T-E1-32
+- [x] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam — T-E1-16
+- [x] `mongosh` retorna o documento de control plane dos 2 tenants — T-E1-27
+- [x] `airflow dags list-import-errors` devolve `No data found` e a `smoke_control_plane` roda — T-E1-35, T-E1-36
+- [x] `bash scripts/profile.sh quiesce && resume` funciona nos dois sentidos — com workload real
+
+> **O primeiro item continua aberto, e isso é deliberado.** A stack subiu passo a passo, cada um com seu
+> aceite; o `bootstrap.sh` nunca rodou do zero numa sequência única. Ele é a afirmação de
+> reprodutibilidade da POC, e ela segue **não verificada**. Fechar exige um cluster limpo — ver
+> [TESTES.md §8](../TESTES.md#8-o-que-não-foi-testado).
+
+### Legado da V1 ainda na árvore
+
+`scripts/run-{ingest,gold,normalize}.sh` e `infra/spark/sparkapplication-{ingest,gold,normalize}.yaml`
+são da V1 e apontam para a imagem `datamart-spark:poc`, que não existe mais. Estão marcados com aviso e
+**abortam com exit 1** em vez de falhar em silêncio. Saem quando [E2](E2-execucao.md) T2.6 entregar os
+manifestos novos.
