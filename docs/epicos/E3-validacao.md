@@ -116,14 +116,18 @@ benchmark/
   queries/  q01_cep_por_unidade.{pg,ch}.sql
             q02_serie_temporal_dia.{pg,ch}.sql
             q03_top_produtos_fora_limite.{pg,ch}.sql
-            q04_dashboard_view_filtro.{pg,ch}.sql
-            q05_select_star_view.{pg,ch}.sql
+            q04_dashboard_view_filtro.{pg,pgt,ch}.sql
+            q05_select_star_view.{pg,pgt,ch}.sql
   views/    00_views.{pg,ch}.sql
   read-bench.sh
   report.sh
   results/*.csv
   results/RESULTADO.md
 ```
+
+São **três** braços: `.pg` (Postgres como hoje), `.pgt` (`gold_tuned`, particionado + BRIN) e `.ch`.
+O `.pgt` é o `.pg` com outro schema no `FROM` — mesmo dialeto, mesma query. A distância entre `.pgt` e
+`.ch` é o argumento real da apresentação: mostra quanto sobra **depois** de esgotar o tuning relacional.
 
 Pares `.pg.sql` / `.ch.sql` porque o dialeto diverge de verdade. Tentar um SQL único gasta a POC em
 compatibilidade em vez de medição.

@@ -104,7 +104,7 @@ Aceite: `EXPLAIN` sai de `Parallel Seq Scan` (3207 buffers) para `Index Scan` (6
 - [x] `ddl/postgres/02_indices.sql` + `ANALYZE`
 - [x] `ddl/postgres/01_tenants.sql` e `infra/postgres/job-init.yaml` — um database por tenant, idempotente
 - [x] `ddl/postgres/00_probe_indice.sql` — prova a escolha de plano sem depender da carga
-- [ ] *(opcional, aguarda decisão)* terceiro braço `pg-tuned` particionado + BRIN
+- [x] `ddl/postgres/03_pg_tuned.sql` — terceiro braço no schema `gold_tuned`: particionado por mês + BRIN
 
 Dois defeitos no caminho: [D7](TESTES.md#d7--argumento-inválido-no-primeiro-boot-envenena-o-pgdata)
 (um `-c` invalido no primeiro boot deixa o PGDATA permanentemente meio-inicializado) e
@@ -264,7 +264,7 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 | # | O quê | Bloqueia |
 |---|---|---|
 | 1 | **Carregar os Parquet reais.** `bash scripts/minio-ui.sh` imprime a URL do console, as credenciais e os caminhos exatos derivados do control plane | T2.5, e por consequência **todo o E3** |
-| 2 | **Decidir se o terceiro braço `pg-tuned` entra** — Postgres particionado por range mensal mais índice BRIN. Ver [ADR-002 §alternativas](decisoes/ADR-002-modelagem-clickhouse.md) | T1.4 (opcional); sem ele a pergunta *"então é só arrumar o Postgres?"* fica sem resposta numérica |
+| 2 | *(nenhuma além da carga)* | — |
 
 ### Encerradas
 
@@ -275,3 +275,4 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 | 5 | Nomes de `filial` no seed do Mongo | **Não é decisão da POC**: é contrato de arquitetura entre os serviços. `scripts/minio-ui.sh` deriva e imprime os caminhos a partir do control plane, em vez de pedir que alguém os reconcilie na mão |
 | 6 | `TRUNCATE` dos system logs acumulados | **Dispensável.** Medido: 11,67 MiB em disco num PVC com 819 GiB livres, e as seis tabelas estão **congeladas** (verificado por amostragem — [T-E1-38](TESTES.md#411-verificações-de-encerramento-do-épico)). O risco era de memória em merge, e esse já foi eliminado |
 | 7 | CRD do Spark Operator na 2.5.0 com chart 2.5.2 | **Sem risco.** Diff dos três CRD instalados contra os do chart 2.5.2: **zero linhas divergentes** ([T-E1-39](TESTES.md#411-verificações-de-encerramento-do-épico)) |
+| 8 | Terceiro braço `pg-tuned` | **Entra.** Schema `gold_tuned`, entregue e medido — [T-E1-41](TESTES.md#412-t14-complemento--o-braço-pg-tuned) |
