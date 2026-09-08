@@ -1,0 +1,18 @@
+# Values do helm chart kubeflow/spark-operator (chart v2.x).
+# Instala o operator e faz ele observar SparkApplications no namespace `datamart`.
+#
+#   helm repo add spark-operator https://kubeflow.github.io/spark-operator
+#   helm install spark-operator spark-operator/spark-operator \
+#       -n spark-operator --create-namespace -f infra/spark/operator-values.yaml
+spark:
+  jobNamespaces:
+    - datamart
+
+controller:
+  replicas: 1
+
+webhook:
+  enable: true
+
+# O ServiceAccount de execução dos jobs é criado por nós (infra/spark/spark-rbac.yaml),
+# não pelo chart, para manter o RBAC explícito.

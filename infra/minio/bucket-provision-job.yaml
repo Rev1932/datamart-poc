@@ -1,0 +1,31 @@
+# Cria o bucket `datamart` e os prefixos base após o MinIO ficar Ready.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-provision
+  namespace: datamart
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: quay.io/minio/mc:RELEASE.2024-06-12T14-34-03Z
+          envFrom:
+            - secretRef:
+                name: minio-creds
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              until mc alias set local http://minio.datamart.svc.cluster.local:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
+                echo "aguardando MinIO..."; sleep 3;
+              done
+              mc mb --ignore-existing local/datamart
+              # Marcadores de prefixo (bronze/silver). Objetos reais são criados pelo Spark.
+              echo "ok" | mc pipe local/datamart/data-bee_replication/.keep
+              echo "ok" | mc pipe local/datamart/business_datavault_data-bee/.keep
+              echo "ok" | mc pipe local/datamart/gold_datavault/.keep
+              mc ls --recursive local/datamart
+              echo "bucket provisionado."

@@ -1,0 +1,49 @@
+# Job B — gold: roda a query (resources/queries/<table>.sql) sobre a silver, gera
+# hk_business_id/load_dts, faz MERGE no Delta gold e registra no Trino.
+# OBS: este job usa Trino no final. Se você NÃO subir Trino, prefira o Job C
+# (datamart), que não depende de Trino nem da gold Delta.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: gold-fact-200-cep
+  namespace: datamart
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: datamart-spark:poc
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: local:///opt/spark/app/main.py
+  sparkVersion: "3.5.1"
+  arguments:
+    - "--pipeline"
+    - "gold"
+    - "--config-name"
+    - "unipac"
+    - "--table-name"
+    - "fact_200_cep"
+    - "--chave-pk"
+    - "andon_peso_id"
+  restartPolicy:
+    type: Never
+  # Jars já vêm assados na imagem em /opt/spark/jars (ver images/spark/Dockerfile).
+  driver:
+    cores: 1
+    memory: "1500m"
+    serviceAccount: spark
+    env:
+      - name: ENV
+        value: "local"
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+  executor:
+    cores: 1
+    instances: 2
+    memory: "2g"
+    env:
+      - name: ENV
+        value: "local"
+    envFrom:
+      - secretRef:
+          name: spark-secrets

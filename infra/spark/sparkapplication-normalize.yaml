@@ -1,0 +1,47 @@
+# Job A — bronze_silver: lê Parquet da bronze e grava Delta na silver.
+# Ajuste --config-name / --table-name / --chave-pk para a sua tabela.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: normalize-dw-andon-peso
+  namespace: datamart
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: datamart-spark:poc
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: local:///opt/spark/app/main.py
+  sparkVersion: "3.5.1"
+  arguments:
+    - "--pipeline"
+    - "bronze_silver"
+    - "--config-name"
+    - "unipac"
+    - "--table-name"
+    - "dw_andon_peso"
+    - "--chave-pk"
+    - "id"
+  restartPolicy:
+    type: Never
+  # Jars já vêm assados na imagem em /opt/spark/jars (ver images/spark/Dockerfile).
+  driver:
+    cores: 1
+    memory: "1500m"
+    serviceAccount: spark
+    env:
+      - name: ENV
+        value: "local"
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+  executor:
+    cores: 1
+    instances: 2
+    memory: "2g"
+    env:
+      - name: ENV
+        value: "local"
+    envFrom:
+      - secretRef:
+          name: spark-secrets

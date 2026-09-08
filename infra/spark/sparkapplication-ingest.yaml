@@ -1,0 +1,49 @@
+# Job C — datamart: reusa a leitura da gold (query sobre a silver + hk_business_id +
+# load_dts) e grava o DataFrame no ClickHouse (append). Este é o job medido no
+# benchmark de merge. Requer a tabela ClickHouse pré-criada (ddl/01).
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: datamart-fact-200-cep
+  namespace: datamart
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: datamart-spark:poc
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: local:///opt/spark/app/main.py
+  sparkVersion: "3.5.1"
+  arguments:
+    - "--pipeline"
+    - "datamart"
+    - "--config-name"
+    - "unipac"
+    - "--table-name"
+    - "fact_200_cep"
+    - "--chave-pk"
+    - "andon_peso_id"
+  restartPolicy:
+    type: Never
+  # Jars (Delta / hadoop-aws / connector ClickHouse) já vêm assados na imagem em
+  # /opt/spark/jars (ver images/spark/Dockerfile) — sem resolução ivy em runtime.
+  driver:
+    cores: 1
+    memory: "1500m"
+    serviceAccount: spark
+    env:
+      - name: ENV
+        value: "local"
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+  executor:
+    cores: 1
+    instances: 2
+    memory: "2g"
+    env:
+      - name: ENV
+        value: "local"
+    envFrom:
+      - secretRef:
+          name: spark-secrets

@@ -1,0 +1,58 @@
+# Instância ClickHouse da POC (1 shard / 1 réplica) com settings voltados a
+# eficiência de merge do ReplacingMergeTree. Ajuste os números no benchmark (B4).
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: datamart
+  namespace: datamart
+spec:
+  defaults:
+    templates:
+      dataVolumeClaimTemplate: data-volume
+  configuration:
+    clusters:
+      - name: datamart
+        layout:
+          shardsCount: 1
+          replicasCount: 1
+    users:
+      datamart/password: datamart123
+      datamart/networks/ip:
+        - "::/0"
+      datamart/profile: default
+      datamart/quota: default
+    profiles:
+      # Settings de query/sessão (nível perfil)
+      default/optimize_on_insert: 0                       # não faz merge síncrono no INSERT
+      default/do_not_merge_across_partitions_select_final: 1  # barateia SELECT ... FINAL
+    settings:
+      # Settings de servidor (nível merge_tree / pools)
+      background_pool_size: 16
+      background_merges_mutations_concurrency_ratio: 4
+      merge_tree/parts_to_delay_insert: 1000
+      merge_tree/parts_to_throw_insert: 3000
+      merge_tree/max_bytes_to_merge_at_max_space_in_pool: 161061273600  # ~150 GiB
+      merge_tree/min_bytes_for_wide_part: 10485760                      # 10 MiB
+  templates:
+    volumeClaimTemplates:
+      - name: data-volume
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: standard
+          resources:
+            requests:
+              storage: 20Gi
+    podTemplates:
+      - name: default
+        spec:
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:24.8
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: "2Gi"
+                limits:
+                  cpu: "4"
+                  memory: "6Gi"
