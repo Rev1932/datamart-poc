@@ -29,7 +29,8 @@ spec:
   # /opt/spark/jars (ver images/spark/Dockerfile) — sem resolução ivy em runtime.
   driver:
     cores: 1
-    memory: "1500m"
+    memory: "1g"
+    memoryOverhead: "384m"
     serviceAccount: spark
     env:
       - name: ENV
@@ -39,8 +40,9 @@ spec:
           name: spark-secrets
   executor:
     cores: 1
-    instances: 2
-    memory: "2g"
+    instances: 1
+    memory: "1g"
+    memoryOverhead: "384m"
     env:
       - name: ENV
         value: "local"

@@ -1,0 +1,66 @@
+# Aplica ddl/rbac/10_tenant.sql.tpl por tenant. O template chega pelo ConfigMap
+# ch-rbac-tpl, criado em scripts/bootstrap.sh a partir do arquivo (fonte única).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ch-rbac
+  namespace: datamart
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: ch-rbac
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rbac
+          image: clickhouse/clickhouse-server:24.8
+          env:
+            - name: CH_HOST
+              value: clickhouse-datamart.datamart.svc.cluster.local
+            - name: TENANTS
+              value: "acme globex"
+          volumeMounts:
+            - name: tpl
+              mountPath: /tpl
+              readOnly: true
+            - name: creds
+              mountPath: /creds
+              readOnly: true
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              echo ">> aguardando ClickHouse em $CH_HOST"
+              for _ in $(seq 1 60); do
+                if clickhouse-client --host "$CH_HOST" --user dm_admin \
+                     --password "$(cat /creds/dm_admin)" -q "SELECT 1" >/dev/null 2>&1; then
+                  echo ">> ClickHouse respondeu"
+                  break
+                fi
+                sleep 5
+              done
+
+              for t in $TENANTS; do
+                echo ">> aplicando RBAC do tenant $t"
+                sed -e "s/{{TENANT}}/${t}/g" \
+                    -e "s|{{PWD_RO}}|$(cat "/creds/${t}_ro")|g" \
+                    -e "s|{{PWD_LD}}|$(cat "/creds/${t}_loader")|g" \
+                    /tpl/10_tenant.sql.tpl > "/tmp/${t}.sql"
+
+                clickhouse-client --host "$CH_HOST" --user dm_admin \
+                  --password "$(cat /creds/dm_admin)" \
+                  --multiquery < "/tmp/${t}.sql"
+              done
+
+              echo ">> RBAC aplicado para: $TENANTS"
+      volumes:
+        - name: tpl
+          configMap:
+            name: ch-rbac-tpl
+        - name: creds
+          secret:
+            secretName: ch-creds

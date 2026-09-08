@@ -1,5 +1,19 @@
-# Instância ClickHouse da POC (1 shard / 1 réplica) com settings voltados a
-# eficiência de merge do ReplacingMergeTree. Ajuste os números no benchmark (B4).
+# Instância ClickHouse da POC (1 shard / 1 réplica).
+# Só o usuário de bootstrap vive aqui: identidade de tenant declarada no CR não pode
+# receber GRANT (o storage users.xml é read-only para SQL). Ver docs/decisoes/ADR-003.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ch-creds
+  namespace: datamart
+type: Opaque
+stringData:
+  dm_admin: dm_admin_poc
+  acme_ro: acme_ro_poc
+  acme_loader: acme_loader_poc
+  globex_ro: globex_ro_poc
+  globex_loader: globex_loader_poc
+---
 apiVersion: clickhouse.altinity.com/v1
 kind: ClickHouseInstallation
 metadata:
@@ -9,6 +23,9 @@ spec:
   defaults:
     templates:
       dataVolumeClaimTemplate: data-volume
+      # Sem esta linha o operador ignora podTemplates inteiro: sobe `latest` sem
+      # limite de memória nenhum, e não avisa.
+      podTemplate: default
   configuration:
     clusters:
       - name: datamart
@@ -16,23 +33,30 @@ spec:
           shardsCount: 1
           replicasCount: 1
     users:
-      datamart/password: datamart123
-      datamart/networks/ip:
+      dm_admin/k8s_secret_password: datamart/ch-creds/dm_admin
+      dm_admin/access_management: 1
+      dm_admin/networks/ip:
         - "::/0"
-      datamart/profile: default
-      datamart/quota: default
+      dm_admin/profile: default
+      dm_admin/quota: default
     profiles:
-      # Settings de query/sessão (nível perfil)
-      default/optimize_on_insert: 0                       # não faz merge síncrono no INSERT
-      default/do_not_merge_across_partitions_select_final: 1  # barateia SELECT ... FINAL
+      default/optimize_on_insert: 0
     settings:
-      # Settings de servidor (nível merge_tree / pools)
-      background_pool_size: 16
+      # O default do mark_cache é 5 GiB e o de max_server_memory_usage é 90% da RAM
+      # vista pelo processo: qualquer um dos dois estoura sozinho o limite de 2,25Gi.
+      max_server_memory_usage: 1610612736
+      mark_cache_size: 402653184
+      # O produto dos dois é validado na subida contra
+      # number_of_free_entries_in_pool_to_execute_optimize_entire_partition (25):
+      # abaixo disso o servidor recusa iniciar com Code 36 (BAD_ARGUMENTS).
+      background_pool_size: 8
       background_merges_mutations_concurrency_ratio: 4
       merge_tree/parts_to_delay_insert: 1000
       merge_tree/parts_to_throw_insert: 3000
-      merge_tree/max_bytes_to_merge_at_max_space_in_pool: 161061273600  # ~150 GiB
-      merge_tree/min_bytes_for_wide_part: 10485760                      # 10 MiB
+      # Um merge precisa de espaço livre igual ao seu resultado; o default (150 GiB)
+      # não cabe num PVC de 20Gi e vira Code 243 (NOT_ENOUGH_SPACE) no meio da carga.
+      merge_tree/max_bytes_to_merge_at_max_space_in_pool: 10737418240
+      merge_tree/min_bytes_for_wide_part: 10485760
   templates:
     volumeClaimTemplates:
       - name: data-volume
@@ -51,8 +75,8 @@ spec:
               image: clickhouse/clickhouse-server:24.8
               resources:
                 requests:
-                  cpu: "1"
-                  memory: "2Gi"
+                  cpu: "500m"
+                  memory: "1Gi"
                 limits:
-                  cpu: "4"
-                  memory: "6Gi"
+                  cpu: "3"
+                  memory: "2304Mi"

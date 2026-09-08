@@ -27,5 +27,6 @@ spec:
               echo "ok" | mc pipe local/datamart/data-bee_replication/.keep
               echo "ok" | mc pipe local/datamart/business_datavault_data-bee/.keep
               echo "ok" | mc pipe local/datamart/gold_datavault/.keep
+              echo "ok" | mc pipe local/datamart/stage/.keep
               mc ls --recursive local/datamart
               echo "bucket provisionado."
