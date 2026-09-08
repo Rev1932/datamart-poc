@@ -7,6 +7,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# submit_spark: (re)submete uma SparkApplication e aguarda estado terminal.
+source "$ROOT/scripts/_lib.sh"
+
 echo "==> 1/12 cluster local"
 bash cluster/minikube-up.sh
 
@@ -92,17 +95,10 @@ kubectl -n airflow exec statefulset/airflow-scheduler -c scheduler -- \
 echo "==> 11/12 smoke do connector ClickHouse"
 kubectl -n datamart create configmap ch-smoke \
   --from-file=infra/spark/smoke/smoke_clickhouse.py --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f infra/spark/sparkapplication-smoke-clickhouse.yaml
-for _ in $(seq 1 40); do
-  st="$(kubectl -n datamart get sparkapplication smoke-clickhouse -o jsonpath='{.status.applicationState.state}' 2>/dev/null || true)"
-  case "$st" in
-    COMPLETED) echo "    smoke OK"; break ;;
-    FAILED|SUBMISSION_FAILED)
-      kubectl -n datamart logs smoke-clickhouse-driver | tail -30
-      echo "ERRO: smoke do connector falhou." >&2; exit 1 ;;
-  esac
-  sleep 15
-done
+# submit_spark e nao `kubectl apply`: um CR em estado terminal de uma execucao
+# anterior faz o apply virar no-op, e a espera leria o estado velho.
+submit_spark infra/spark/sparkapplication-smoke-clickhouse.yaml smoke-clickhouse \
+  || { echo "ERRO: smoke do connector falhou." >&2; exit 1; }
 
 echo "==> 12/12 tabela de fato por tenant"
 DDL_FATO=ddl/clickhouse/01_fact_200_cep.sql

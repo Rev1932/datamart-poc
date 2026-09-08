@@ -1,3 +1,7 @@
+# LEGADO DA V1 — NAO USAR. Aponta para a imagem `datamart-spark:poc`, que a V2
+# substituiu por `honeycomb:poc`, e passa argumentos do fork antigo em
+# spark-source-code/. Superado pelas DAGs de E2/T2.6. Mantido so como referencia
+# do que a V1 submetia; sera removido quando T2.6 entregar os manifestos novos.
 # Job B — gold: roda a query (resources/queries/<table>.sql) sobre a silver, gera
 # hk_business_id/load_dts, faz MERGE no Delta gold e registra no Trino.
 # OBS: este job usa Trino no final. Se você NÃO subir Trino, prefira o Job C

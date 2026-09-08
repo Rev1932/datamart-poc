@@ -23,12 +23,16 @@ Execução dos testes registrada em [TESTES.md](TESTES.md) — 41 testes, 34 ver
 | Marco | Critério | Estado |
 |---|---|---|
 | **M0 — Especificação fechada** | E0 inteiro | ✅ |
-| **M1 — Stack de pé** | Checklist Go/No-Go de [E1](epicos/E1-infraestrutura.md) inteiro | ✅ |
+| **M1 — Stack de pé** | Checklist Go/No-Go de [E1](epicos/E1-infraestrutura.md) — 7 de 8 | ✅ com ressalva |
 | **M2 — Dado fluindo** | Um trigger no Airflow carrega os dois braços pelo Dataset | ⬜ |
 | **M3 — Dado íntegro** | `compare-counts.sh` com `delta = 0` em toda linha | ⬜ |
 | **M4 — Evidência pronta** | `benchmark/results/RESULTADO.md` com as 8 seções | ⬜ |
 
 M3 é portão duro: sem ele, M4 não começa.
+
+A ressalva do M1: o `bootstrap.sh` **nunca rodou de ponta a ponta**. A stack subiu passo a passo,
+cada um com aceite executado, mas a afirmação de reprodutibilidade segue não verificada — só fecha
+num cluster limpo. Registrado na [auditoria de encerramento](TESTES.md#12-auditoria-de-encerramento-do-épico-1).
 
 ---
 
