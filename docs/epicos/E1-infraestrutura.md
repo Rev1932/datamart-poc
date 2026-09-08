@@ -458,7 +458,7 @@ carregada, roda e prova o caminho inteiro.
 
 ## Checklist Go/No-Go do épico
 
-- [ ] `bash scripts/bootstrap.sh` (perfil `small`) termina sem erro — **nunca executado de ponta a ponta**
+- [x] `bash scripts/bootstrap.sh` (perfil `small`) termina sem erro — T-E1-44
 - [x] `kubectl get pods` — nenhum `CrashLoopBackOff`
 - [x] `mc ls poc/datamart/` lista os 4 prefixos — T-E1-10
 - [x] o smoke do connector ClickHouse chega a `COMPLETED` — T-E1-32
@@ -467,10 +467,9 @@ carregada, roda e prova o caminho inteiro.
 - [x] `airflow dags list-import-errors` devolve `No data found` e a `smoke_control_plane` roda — T-E1-35, T-E1-36
 - [x] `bash scripts/profile.sh quiesce && resume` funciona nos dois sentidos — com workload real
 
-> **O primeiro item continua aberto, e isso é deliberado.** A stack subiu passo a passo, cada um com seu
-> aceite; o `bootstrap.sh` nunca rodou do zero numa sequência única. Ele é a afirmação de
-> reprodutibilidade da POC, e ela segue **não verificada**. Fechar exige um cluster limpo — ver
-> [TESTES.md §8](../TESTES.md#8-o-que-não-foi-testado).
+> **Os oito itens verificados, o primeiro num cluster criado do zero.** O `minikube delete` foi feito e o
+> `bootstrap.sh` reconstruiu a stack inteira em 12 passos sem intervenção. A reprodutibilidade deixou de
+> ser intenção e virou medida.
 
 ### Legado da V1 ainda na árvore
 
