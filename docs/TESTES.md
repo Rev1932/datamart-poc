@@ -124,7 +124,7 @@ abaixo existem.
 |---|---|---|
 | T-E1-01 | Pré-checagem de RAM aprova `full` (15 ≥ 15) e `small` (15 ≥ 13) | ✅ |
 | T-E1-02 | Pré-checagem de disco aprova (832 GiB ≥ 82 GiB) | ✅ |
-| T-E1-03 | `PROFILE=small bash cluster/minikube-up.sh` sobe o cluster e habilita os 3 addons | ✅ |
+| T-E1-03 | `bash cluster/minikube-up.sh --profile small` sobe o cluster e habilita os 3 addons | ✅ |
 | T-E1-04 | **Aceite antigo:** `kubectl get node` mostra a capacidade do perfil | ❌ → [D4](#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup) |
 | T-E1-20 | **Aceite novo:** `docker inspect` mostra o cgroup do perfil `small` | ✅ |
 | T-E1-05 | `profile.sh quiesce` degrada sem erro quando o workload não existe | ✅ |
@@ -609,7 +609,7 @@ SparkApplication — provada antes de existir DAG que dependa dela.
 |---|---|---|
 | Airflow scheduler | 505Mi | 1280Mi |
 | ClickHouse | 355Mi | 3Gi |
-| Airflow webserver | 135Mi | 768Mi |
+| Airflow webserver | ~~135Mi~~ **824Mi** | ~~768Mi~~ **1280Mi** | 
 | MinIO | 110Mi | 1Gi |
 | PostgreSQL (braço) | 103Mi | 1792Mi |
 | MongoDB | 169Mi | 640Mi |
@@ -619,6 +619,56 @@ SparkApplication — provada antes de existir DAG que dependa dela.
 
 Os sete serviços simultâneos, sem Spark rodando. Sobram 3,5 GiB para o pico de ingestão, que pede
 2,75 GiB de driver mais executor — cabe, com folga de ~0,7 GiB.
+
+---
+
+### 4.15 T1.8 — Acesso aos serviços e portabilidade de shell
+
+Rodada 3, 2026-09-09. A task nasceu com duas partes: portabilidade para fish (parte A) e acesso por nome
+via Ingress/DNS (parte B). A parte B foi **descartada por decisão do usuário** depois da pesquisa
+registrada em [pesquisa-ingress-dns-wsl2.md](pesquisa-ingress-dns-wsl2.md): o addon `ingress-dns` está
+abandonado upstream e a metade que falta — o resolvedor do WSL2 — exigiria alteração com risco à
+resolução de nome corporativa. Entrou no lugar o `scripts/ports.sh`, um gerenciador de `port-forward`.
+
+**Portabilidade (parte A)**
+
+| ID | Verificação | Estado |
+|---|---|---|
+| T-E1-45 | `bash -n` nos 4 scripts alterados | ✅ |
+| T-E1-46 | `check-shell-portability.sh` sai 0 | ✅ |
+| T-E1-47 | Teste negativo: linha `PROFILE=small bash ...` injetada num `.md` faz o detector sair 1; removida, volta a 0 | ✅ |
+| T-E1-48 | `fish -c 'bash cluster/minikube-up.sh --help'` e `submit.sh --help` saem 0 | ✅ |
+
+O T-E1-47 é o que dá valor ao detector: sem ele, um script que sempre imprime `OK` passaria por teste.
+
+**`ports.sh` (substituto da parte B)**
+
+| ID | Verificação | Estado |
+|---|---|---|
+| T-E1-49 | `fish -c 'bash scripts/ports.sh'` sobe os 7 encaminhamentos e sai 0 | ✅ |
+| T-E1-50 | `console` 200, `s3` 200, `clickhouse` `Ok.`, TCP 5432/27017/9010 abertos | ✅ |
+| T-E1-51 | `airflow` responde | ❌ → [D14](#d14--webserver-do-airflow-em-oomkill-cíclico), ✅ após a correção |
+| T-E1-52 | Query real pela porta encaminhada: `SELECT version(), currentUser()` → `24.8.14.39  dm_admin` | ✅ |
+| T-E1-53 | Idempotência: segundo `--start` informa "ja no ar" e não duplica processo | ✅ |
+| T-E1-54 | Resiliência: matar o `kubectl` filho; o supervisor reabre em < 6 s e o console volta a 200 | ✅ |
+| T-E1-55 | Órfão: matar o supervisor deixa o `kubectl` segurando a porta; `--start` reapa o grupo e recupera | ✅ (após correção) |
+| T-E1-56 | `--stop` derruba os 7 e deixa **0** processos de encaminhamento | ✅ (após correção) |
+| T-E1-57 | `--only naoexiste` sai 2; `--xpto` sai 2 imprimindo a ajuda | ✅ |
+| T-E1-58 | `--creds` lê as credenciais dos 5 serviços dos Secrets | ✅ |
+| T-E1-59 | `minio-ui.sh` | ❌ → [D15](#d15--minio-uish-aponta-para-um-service-que-não-existe) |
+
+Dois defeitos do próprio script foram encontrados **e corrigidos** durante a bateria, e ficam registrados
+porque nenhum dos dois aparece em teste de caminho feliz:
+
+- `--stop` abortava com `chave: unbound variable`. A causa é uma armadilha do bash: em
+  `local a="$1" b="$ESTADO/$a.pid"`, o `$a` da segunda atribuição resolve contra a variável local ainda
+  não atribuída, e com `set -u` isso mata o script. Corrigido separando as declarações.
+- Matar o supervisor deixava o `kubectl` órfão segurando a porta, e o `--start` seguinte recusava para
+  sempre com "porta ocupada por outro processo". Corrigido reapando o grupo de processos antes de julgar
+  a porta.
+
+> O T-E1-54 é o teste que justifica a existência do script. Um `kubectl port-forward` solto morre a cada
+> restart de pod e não volta; o supervisor reabre sozinho, que é exatamente a dor que originou a task.
 
 ---
 
@@ -923,6 +973,108 @@ por arquivo.
 
 ---
 
+### D14 — Webserver do Airflow em OOMKill cíclico
+
+**Severidade: alta. Introduzido por mim ao reduzir a memória da stack.**
+
+O pod do webserver acumulou **160 restarts em 17 h** — um a cada ~6 minutos. O motivo é inequívoco:
+
+```
+lastState.terminated.reason  → OOMKilled
+resources.limits.memory      → 768Mi
+```
+
+O chart do Airflow sobe o webserver com **4 workers gunicorn** por padrão (`AIRFLOW__WEBSERVER__WORKERS=4`),
+cada um na casa de 250 MiB. Quando reduzi o teto para 768Mi, não reduzi o número de workers junto: o
+processo sobe, os workers carregam, o cgroup estoura e o kernel mata o container. O ciclo se repete
+indefinidamente.
+
+O sintoma visível de fora é enganoso. `kubectl get pod` mostra `Running`, e o encaminhamento de porta
+falha com `connection refused` **de dentro do pod**:
+
+```
+an error occurred forwarding 8080 -> 8080: ... socat E connect(5, AF=2 127.0.0.1:8080, 16):
+Connection refused
+```
+
+> **Isto contamina a medição de consumo da [§4.10](#410-consumo-com-a-stack-inteira-de-pé).** Os 135Mi
+> registrados ali para o webserver são o vale logo depois de um restart, não o regime permanente. O
+> número real, no pico, é o que estoura 768Mi. As demais linhas daquela tabela não são afetadas.
+
+**Primeira tentativa de correção, insuficiente.** Baixei para `config.webserver.workers: "1"` e o pod
+continuou indisponível — agora sem reiniciar o container, o que despistou por alguns minutos. O kernel do
+nó deu a resposta exata:
+
+```
+oom-kill:constraint=CONSTRAINT_MEMCG ... task=gunicorn: maste
+Killed process ... anon-rss:480012kB
+memory.peak = 805306368        # exatamente 768 MiB, o teto
+```
+
+E a tabela de processos dentro do container:
+
+| PID | RSS | Processo |
+|---|---|---|
+| 13 | 577 MiB | o **único** worker gunicorn |
+| 7 | 165 MiB | master |
+
+**Um worker sozinho ocupa 577 MiB** — ele carrega o DagBag inteiro. Com o master dá 742 MiB contra um
+teto de 768 MiB: não sobra margem para pico nenhum. Com `RESTARTS 0` porque o OOM killer do cgroup
+escolhia o worker, não o PID 1, então o container sobrevivia e só o serviço morria.
+
+> A lição corrige meu diagnóstico inicial: o número de workers era **parte** da causa, não a causa. O teto
+> de 768Mi que eu mesmo apertei estava abaixo do que um webserver do Airflow 2.11 precisa com **qualquer**
+> número de workers.
+
+**Correção aplicada:** `workers: "1"` **e** teto de `1280Mi`, com requests de `768Mi`.
+
+Medido depois, com a stack inteira de pé:
+
+| Métrica | Antes | Depois |
+|---|---|---|
+| `rss` anônima (não reclaimável) | 849 MiB | **659 MiB** |
+| `cache` (reclaimável) | 162 MiB | 153 MiB |
+| Teto do cgroup | 768 MiB | **1280 MiB** |
+| Restarts | 160 em 17 h | **0** |
+| Nó | — | 4,87 GiB / 8 GiB (60,9%) |
+
+O orçamento continua fechando: 4364 Mi de requests agendados, 3828 Mi livres, e o pico do Spark pede
+2816 Mi. Some-se que `profile.sh quiesce` escala o webserver para 0 antes de carga pesada, então esse teto
+não disputa com o Spark na prática.
+
+Custo declarado: com um worker, as requisições da UI são serializadas. Perceptível só se duas páginas
+pesadas forem abertas ao mesmo tempo.
+
+**Estado: ✅ resolvido.** `helm upgrade` aplicado (revisão 4), autorizado pelo usuário.
+
+---
+
+### D15 — `minio-ui.sh` aponta para um Service que não existe
+
+**Severidade: alta pelo bloqueio, trivial na correção.**
+
+```
+$ bash scripts/minio-ui.sh
+Error from server (NotFound): services "minio-console" not found
+exit=1
+```
+
+O script consultava o NodePort `minio-console` para montar a URL do console. Esse Service era da V1;
+ao reescrever `infra/minio/minio-standalone.yaml` em T1.2 deixei só o headless `minio`, e não atualizei o
+script. Com `set -euo pipefail`, a busca falha e o script morre antes de imprimir qualquer coisa.
+
+O impacto não é cosmético: `minio-ui.sh` é o caminho documentado para o usuário carregar os Parquet
+reais, que é a pendência que bloqueia T2.5 e todo o Épico 3.
+
+Passou despercebido porque nenhum teste do Épico 1 executava o script — ele não tem aceite próprio, e o
+teste de T1.2 verifica os prefixos do bucket por outro caminho.
+
+**Correção:** o script deixa de encaminhar porta e de consultar NodePort. Passa a imprimir credenciais e
+o contrato de layout, delegando o acesso ao `ports.sh`; `--forward` virou `--abrir`, que chama
+`ports.sh --only console`.
+
+---
+
 ## 8. O que NÃO foi testado
 
 Sem isto, os resultados acima valem menos do que parecem.
@@ -954,6 +1106,7 @@ ocasião. Nenhum atrapalha uma reexecução: todos os caminhos testados são ide
 | Job `ch-rbac` | Tem `ttlSecondsAfterFinished: 300`; some sozinho |
 | Job `minio-provision` | Sem TTL; precisa de remoção manual para reexecutar |
 | `~/.datamart-poc-profile.state` | `profile.sh`, vazio |
+| `~/.cache/datamart-poc/ports/` | `ports.sh` — arquivos de PID e log; fora do cluster |
 
 O `minio-provision` sem TTL é uma aspereza: `kubectl apply` num Job concluído com spec alterada falha por
 imutabilidade. Vale copiar o `ttlSecondsAfterFinished` do `ch-rbac` para ele em T1.2.
@@ -998,6 +1151,37 @@ Memória do nó depois da remoção: **2,81 GiB de 8,00 GiB (35%)**. Note que `d
 cgroup real, ao contrário de `kubectl top` — é a ferramenta certa sob [D4](#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup).
 
 ---
+---
+
+### Limpeza dos artefatos da pesquisa de ingress-dns — ✅ autorizada e executada
+
+```bash
+kubectl -n datamart delete deploy dnsprobe
+kubectl -n datamart delete cm dnsprobe-corefile
+kubectl -n datamart delete ingress probe-console teste-dns
+kubectl -n airflow  delete ingress probe-airflow
+minikube addons disable ingress-dns
+```
+
+Seis objetos criados por mim durante a pesquisa. Conferido depois: `kubectl get ingress -A` devolve
+`No resources found`, e não há mais pod `kube-ingress-dns-minikube`. O addon `ingress` (o nginx) **não**
+foi tocado — continua habilitado e é o que responde na porta 80 do nó.
+
+### `helm upgrade` do Airflow — ✅ autorizada e executada
+
+```bash
+helm upgrade --install airflow apache-airflow/airflow --version 1.16.0 \
+  -n airflow -f infra/airflow/values.yaml --timeout 15m
+```
+
+Três revisões até acertar, e o registro do erro do meio importa: a revisão 2 aplicou só
+`workers: "1"` e **não resolveu** — foi preciso o kernel do nó dizer que um único worker já ocupa 577 MiB
+para eu entender que o teto de 768Mi era a causa principal. A revisão 4 fechou com `768Mi/1280Mi`. Ver
+[D14](#d14--webserver-do-airflow-em-oomkill-cíclico).
+
+Nenhum dado foi perdido: o metadata DB do Airflow é um StatefulSet próprio
+(`infra/airflow/postgres-metadata.yaml`), fora do release, e não foi tocado em nenhuma das revisões.
+
 ---
 
 ## 12. Auditoria de encerramento do Épico 1

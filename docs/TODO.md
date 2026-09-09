@@ -12,9 +12,11 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 8 de 19 tasks fechadas. **Épico 1 completo** — M1 atingido.
+**Progresso:** 9 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido.
 
-Execução dos testes registrada em [TESTES.md](TESTES.md) — 41 testes, 34 verdes, 1 defeito aberto.
+Execução dos testes registrada em [TESTES.md](TESTES.md) — 60 testes, **1 defeito aberto**:
+[D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup), sem correção possível e mitigado.
+D14 e D15, achados nesta rodada, foram corrigidos e verificados.
 
 ---
 
@@ -23,7 +25,7 @@ Execução dos testes registrada em [TESTES.md](TESTES.md) — 41 testes, 34 ver
 | Marco | Critério | Estado |
 |---|---|---|
 | **M0 — Especificação fechada** | E0 inteiro | ✅ |
-| **M1 — Stack de pé** | Checklist Go/No-Go de [E1](epicos/E1-infraestrutura.md) — **8 de 8** | ✅ |
+| **M1 — Stack de pé** | Checklist Go/No-Go de [E1](epicos/E1-infraestrutura.md) — **9 de 9** | ✅ |
 | **M2 — Dado fluindo** | Um trigger no Airflow carrega os dois braços pelo Dataset | ⬜ |
 | **M3 — Dado íntegro** | `compare-counts.sh` com `delta = 0` em toda linha | ⬜ |
 | **M4 — Evidência pronta** | `benchmark/results/RESULTADO.md` com as 8 seções | ⬜ |
@@ -54,7 +56,17 @@ Aceite: todo link interno resolve e toda âncora existe — verificado por varre
 
 ---
 
-## Épico 1 — Infraestrutura → [especificação](epicos/E1-infraestrutura.md)
+## ✅ Épico 1 — Infraestrutura → [especificação](epicos/E1-infraestrutura.md)
+
+**Encerrado.** 8 tasks (T1.1 a T1.8), Go/No-Go 9 de 9, entregue em cinco PRs parceladas. A stack sobe de
+um cluster vazio pelo `bootstrap.sh` em 12 passos, com os sete serviços acessíveis por
+`scripts/ports.sh`. Doze defeitos registrados na execução (D4 a D15) mais quatro achados de auditoria
+(A1 a A4); **um permanece aberto**
+([D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup)), sem correção possível e
+mitigado por trocar o critério de aceite de `kubectl get node` para `docker inspect`.
+
+O que o épico **não** entrega, e é bom estar dito: nenhum dado real. Toda medição até aqui é sobre
+infraestrutura de pé, não sobre o dado do cliente. Isso começa em [E2](epicos/E2-execucao.md).
 
 ### ✅ T1.1 — Repositório e cluster base
 Aceite: `docker inspect minikube --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'`
@@ -163,6 +175,50 @@ O scheduler é **StatefulSet** neste chart, não Deployment, e o pod tem dois co
 `statefulset/airflow-scheduler -c scheduler`. `scripts/profile.sh` foi corrigido junto.
 [D13](TESTES.md#d13--configmap-montada-em-optairflowdags-quebra-o-walker-de-dags): montar a ConfigMap
 direto em `/opt/airflow/dags` quebra o walker de DAGs com `Detected recursive loop`.
+
+### ✅ T1.8 — Acesso aos serviços e portabilidade de shell
+Aceite: `check-shell-portability.sh` sai 0 e `ports.sh` sobe os serviços a partir do fish —
+[§4.15](TESTES.md#415-t18--acesso-aos-serviços-e-portabilidade-de-shell)
+
+Task extra, aberta depois do fechamento do épico. Nasceu de dois atritos de uso diário: o shell do
+usuário é fish e a documentação instruía sintaxe de bash; e o acesso aos serviços dependia de
+`port-forward` manual, que morre com o terminal.
+
+**Parte A — portabilidade**
+
+- [x] `cluster/minikube-up.sh` — `--profile`, `--disk`, `--help`; variáveis de ambiente seguem aceitas
+- [x] `scripts/seed-bronze.sh` — `--src-dir`, `--config-name`, `--table`
+- [x] `scripts/submit.sh` — `--dry`, `--instances`, `--driver-mem`, `--exec-mem`, `--exec-cores`
+- [x] Mensagens que os próprios scripts imprimem passam a mostrar a forma com flag
+- [x] Os dois `until ... do ... done` da documentação viram `kubectl wait --for=jsonpath=...`
+- [x] `eval "$(minikube docker-env)"` documentado ao lado da forma fish, `minikube docker-env --shell fish | source`
+- [x] `scripts/check-shell-portability.sh` — detector de regressão, com teste negativo
+
+**Parte B — acesso por nome: descartada**
+
+A pesquisa está em [pesquisa-ingress-dns-wsl2.md](pesquisa-ingress-dns-wsl2.md). Resumo da decisão: o
+addon `ingress-dns` está abandonado (imagem removida do registry, issue fechada como *not planned*), e a
+metade que faltaria — fazer o resolvedor do WSL2 consultar o cluster — exige `generateResolvConf=false`,
+com risco relatado de quebrar a resolução de nome corporativa. **Decisão do usuário: o custo não
+compensa.** Entra no lugar um gerenciador de `port-forward`.
+
+**Parte B' — `scripts/ports.sh`**
+
+- [x] Sete portas: `console`, `s3`, `airflow`, `clickhouse`, `ch-native`, `postgres`, `mongo`
+- [x] Segundo plano: devolve o prompt, não ocupa o terminal
+- [x] Supervisor por porta que **reabre sozinho** quando a conexão cai — a dor que originou a task
+- [x] `--start` idempotente, `--stop`, `--restart`, `--status`, `--logs`, `--creds`, `--list`, `--only`
+- [x] Detecta porta ocupada por processo alheio e ignora aquela chave, sem abortar o resto
+- [x] `scripts/minio-ui.sh` corrigido — [D15](TESTES.md#d15--minio-uish-aponta-para-um-service-que-não-existe)
+
+- [x] `helm upgrade` do Airflow aplicado (revisão 4), autorizado pelo usuário
+- [x] Artefatos da pesquisa de ingress-dns removidos do cluster, autorizado pelo usuário
+
+[D14](TESTES.md#d14--webserver-do-airflow-em-oomkill-cíclico): o webserver do Airflow estava em OOMKill
+cíclico (160 restarts em 17 h). Só apareceu porque o `ports.sh` tentou usar a porta — nenhum teste do
+épico chegava a acessá-lo. A causa não era só o número de workers: **um único worker ocupa 577 MiB**, e o
+teto de 768Mi que eu havia apertado ficava abaixo do necessário com qualquer configuração. Resolvido com
+`workers: "1"` mais teto de `1280Mi`; o pod está em **0 restarts**.
 
 ---
 
