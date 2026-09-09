@@ -2,7 +2,30 @@
 # Sobe o cluster local (minikube) para a POC. Roda dentro do WSL2 (driver docker).
 set -euo pipefail
 
+usage() {
+  cat <<EOF
+Uso: bash cluster/minikube-up.sh [--profile small|full] [--disk 90g]
+
+  --profile small|full   perfil de recursos do nó (default: \$PROFILE ou small)
+  --disk TAMANHO         tamanho de disco do minikube, ex.: 90g (default: \$DISK ou 90g)
+  -h, --help             mostra esta ajuda
+
+Fallback: as variáveis de ambiente PROFILE e DISK continuam aceitas (flag tem
+precedência sobre elas).
+EOF
+}
+
 PROFILE="${PROFILE:-small}"
+DISK="${DISK:-90g}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile) PROFILE="$2"; shift 2 ;;
+    --disk) DISK="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERRO: opção desconhecida '$1'." >&2; usage >&2; exit 1 ;;
+  esac
+done
 
 case "$PROFILE" in
   full)  CPUS=6; MEMORY_GIB=10 ;;
@@ -13,7 +36,6 @@ case "$PROFILE" in
     ;;
 esac
 
-DISK="${DISK:-90g}"
 RAM_MIN_GIB=$(( MEMORY_GIB + 5 ))
 DISK_MIN_GIB=82
 
@@ -29,7 +51,7 @@ ERRO: RAM insuficiente para PROFILE=$PROFILE.
   disponível no WSL2 : ${ram_total_gib} GiB
   exigido            : ${RAM_MIN_GIB} GiB (${MEMORY_GIB} para o nó + 5 para o WSL2 e suas ferramentas)
 
-Rode o perfil reduzido: PROFILE=small bash cluster/minikube-up.sh
+Rode o perfil reduzido: bash cluster/minikube-up.sh --profile small
 Ou ajuste %USERPROFILE%\\.wslconfig no Windows e rode 'wsl --shutdown':
   [wsl2]
   memory=$(( RAM_MIN_GIB + 1 ))GB
@@ -60,7 +82,7 @@ if ! minikube status >/dev/null 2>&1; then
   minikube start --driver=docker --cpus="$CPUS" --memory="${MEMORY_GIB}g" --disk-size="$DISK"
 else
   echo ">> minikube já está rodando — perfil NÃO é reaplicado em cluster existente."
-  echo "   Para trocar de perfil: minikube delete && PROFILE=$PROFILE bash cluster/minikube-up.sh"
+  echo "   Para trocar de perfil: minikube delete && bash cluster/minikube-up.sh --profile $PROFILE"
 fi
 
 echo ">> habilitando addons"

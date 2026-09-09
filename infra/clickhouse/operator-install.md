@@ -12,7 +12,7 @@ Depois, aplique a instância da POC:
 ```bash
 kubectl apply -f infra/clickhouse/chi-datamart.yaml
 # O operador Altinity não expõe condition=Ready; use o status agregado:
-until [ "$(kubectl -n datamart get chi datamart -o jsonpath='{.status.status}')" = "Completed" ]; do sleep 10; done
+kubectl -n datamart wait --for=jsonpath='{.status.status}'=Completed chi/datamart --timeout=600s
 ```
 
 O operador cria o Service `clickhouse-datamart` no namespace `datamart`

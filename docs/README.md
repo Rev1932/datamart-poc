@@ -121,6 +121,7 @@ sobreviva ao escrutínio técnico de quem for contestá-lo. Não uma promessa, n
 | [TESTES.md](TESTES.md) | Registro de execução de teste por épico, defeitos abertos e o que não foi testado |
 | [TUNING.md](TUNING.md) | Todo ajuste feito, o motivo de cada um e como conferir se está aplicado |
 | [TODO.md](TODO.md) | Marcos, tasks e ações com estado — **fonte única do progresso** |
+| [pesquisa-ingress-dns-wsl2.md](pesquisa-ingress-dns-wsl2.md) | Por que o addon `ingress-dns` não serve neste ambiente e qual resolução de nomes adotar — insumo da T1.8 |
 | [epicos/E1-infraestrutura.md](epicos/E1-infraestrutura.md) | 7 tasks, uma por serviço |
 | [epicos/E2-execucao.md](epicos/E2-execucao.md) | 6 tasks, pipelines e orquestração |
 | [epicos/E3-validacao.md](epicos/E3-validacao.md) | 5 tasks, medição e evidência |

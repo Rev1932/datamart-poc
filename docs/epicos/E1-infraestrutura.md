@@ -40,6 +40,7 @@ TLS, SSO, NetworkPolicy, alta disponibilidade, replicação. A POC roda com uma 
 | [T1.5](#t15--clickhouse-multi-tenant) | ClickHouse | T2.3 | T1.4, T1.6 |
 | [T1.6](#t16--mongodb) | MongoDB | T1.7 | T1.4, T1.5 |
 | [T1.7](#t17--airflow) | Airflow | T2.6 | — |
+| [T1.8](#t18--acesso-aos-serviços-e-portabilidade-de-shell) | Acesso e portabilidade de shell | — | todas |
 
 ---
 
@@ -456,6 +457,70 @@ carregada, roda e prova o caminho inteiro.
 
 ---
 
+## T1.8 — Acesso aos serviços e portabilidade de shell
+
+Task extra, aberta **depois** do fechamento do épico. Não bloqueia nada; corrige dois atritos de uso
+diário que a especificação original não previu.
+
+### Problema
+
+1. O shell do usuário é **fish 3.7**, que rejeita o prefixo de variável (`PROFILE=small bash ...`) com
+   `Unsupported use of '='`. Doze quebras em sete arquivos — e cinco delas eram mensagens que os próprios
+   scripts imprimiam, mandando o usuário digitar algo que o shell dele recusa.
+2. O acesso aos serviços dependia de `kubectl port-forward` digitado à mão, que morre com o terminal e
+   não volta quando o pod reinicia.
+
+### Ações
+
+1. Trocar a interface dos scripts de variável de ambiente para **flag**, mantendo a variável como
+   fallback. Flag funciona idêntica em qualquer shell e lê melhor.
+2. Corrigir as mensagens impressas pelos scripts.
+3. Varrer a documentação: prefixos de variável, `until ... do ... done` e o `eval "$(minikube docker-env)"`,
+   que passa a vir ao lado da forma fish, `minikube docker-env --shell fish | source`.
+4. Entregar `scripts/check-shell-portability.sh` como detector de regressão — a convenção já provou que
+   volta sozinha.
+5. Entregar `scripts/ports.sh`: gerenciador de `port-forward` em segundo plano, com supervisor por porta.
+
+### Por que não houve Ingress com nome estável
+
+Era o plano original. Foi pesquisado e **descartado** — ver
+[pesquisa-ingress-dns-wsl2.md](../pesquisa-ingress-dns-wsl2.md). Em resumo: o addon `ingress-dns` do
+minikube está abandonado (imagem removida do registry, issue fechada como *not planned*), e resolver a
+outra metade — fazer o resolvedor do WSL2 consultar o cluster — exigiria `generateResolvConf=false`, com
+risco relatado de quebrar a resolução de nome corporativa. O `nip.io` funcionaria sem custo, mas entrega
+só nomes HTTP; PostgreSQL e MongoDB continuariam dependendo de encaminhamento.
+
+Decisão do usuário: o benefício não paga o esforço. O `ports.sh` cobre os sete acessos com uma peça só.
+
+### Artefatos
+
+| Arquivo | Papel |
+|---|---|
+| `scripts/ports.sh` | Abre, supervisiona e derruba os encaminhamentos |
+| `scripts/check-shell-portability.sh` | Detector de regressão de sintaxe não portável |
+| `cluster/minikube-up.sh`, `scripts/seed-bronze.sh`, `scripts/submit.sh` | Interface por flag |
+| `scripts/minio-ui.sh` | Corrigido; delega o acesso ao `ports.sh` |
+| `docs/pesquisa-ingress-dns-wsl2.md` | A pesquisa que fundamenta o descarte da parte B |
+
+### Aceite
+
+```bash
+bash scripts/check-shell-portability.sh          # sai 0
+fish -c 'bash scripts/ports.sh'                  # sobe as 7 portas, sai 0
+bash scripts/ports.sh --status                   # as 7 com PID e porta aberta
+bash scripts/ports.sh --stop                     # derruba as 7, sem processo órfão
+```
+
+### Riscos
+
+| Risco | Consequência | Mitigação |
+|---|---|---|
+| Porta local já ocupada por outro processo | Aquele serviço fica sem acesso | O script detecta, avisa e segue com os demais |
+| Supervisor morto deixa `kubectl` órfão | `--start` recusaria a porta para sempre | O `--start` reapa o grupo de processos antes de julgar a porta |
+| Estado em `~/.cache` fora do cluster | `minikube delete` não limpa os PID | `--start` valida o PID e reapa o que estiver morto |
+
+---
+
 ## Checklist Go/No-Go do épico
 
 - [x] `bash scripts/bootstrap.sh` (perfil `small`) termina sem erro — T-E1-44
@@ -466,6 +531,7 @@ carregada, roda e prova o caminho inteiro.
 - [x] `mongosh` retorna o documento de control plane dos 2 tenants — T-E1-27
 - [x] `airflow dags list-import-errors` devolve `No data found` e a `smoke_control_plane` roda — T-E1-35, T-E1-36
 - [x] `bash scripts/profile.sh quiesce && resume` funciona nos dois sentidos — com workload real
+- [x] `bash scripts/check-shell-portability.sh` sai 0 e `ports.sh` abre os serviços a partir do fish — T-E1-46, T-E1-49
 
 > **Os oito itens verificados, o primeiro num cluster criado do zero.** O `minikube delete` foi feito e o
 > `bootstrap.sh` reconstruiu a stack inteira em 12 passos sem intervenção. A reprodutibilidade deixou de

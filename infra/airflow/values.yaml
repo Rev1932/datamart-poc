@@ -90,10 +90,10 @@ webserver:
   resources:
     requests:
       cpu: "100m"
-      memory: "320Mi"
+      memory: "768Mi"
     limits:
       cpu: "1"
-      memory: "768Mi"
+      memory: "1280Mi"
   extraInitContainers:
     # Copia os DAGs da ConfigMap para um emptyDir. Montar a ConfigMap DIRETO em
     # /opt/airflow/dags quebra o walker do Airflow: o mecanismo de atualizacao atomica
@@ -141,3 +141,7 @@ config:
     # 30s do dagbag_import_timeout esconderia uma indisponibilidade real por muito tempo.
     dagbag_import_timeout: "60"
     load_examples: "False"
+  webserver:
+    # Medido: o master ocupa 165 MiB e CADA worker carrega o DagBag inteiro, ~577 MiB.
+    # O default do chart e 4 workers; com um usuario so, 1 basta e cabe em 1Gi.
+    workers: "1"

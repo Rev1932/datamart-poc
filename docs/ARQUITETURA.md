@@ -214,11 +214,11 @@ Contrato de dimensionamento para T1.4, T1.6 e T1.7. Não são sugestões: são o
 | PostgreSQL (braço) | 640Mi / 300m | 1792Mi / 2 | `shared_buffers` 384MB, `effective_cache_size` 1GB |
 | MongoDB | 256Mi / 100m | 640Mi / 500m | `--wiredTigerCacheSizeGB 0.25` fixo — é o **mínimo** aceito pelo WiredTiger |
 | Airflow scheduler | 640Mi / 300m | 1280Mi / 2 | LocalExecutor: as tasks rodam neste pod. É **StatefulSet**, não Deployment |
-| Airflow webserver | 320Mi / 100m | 768Mi / 1 | — |
+| Airflow webserver | 768Mi / 100m | 1280Mi / 1 | `webserver.workers` **1** — cada worker gunicorn carrega o DagBag inteiro, ~577 MiB |
 | Airflow metadata PG | 192Mi / 100m | 384Mi / 500m | subchart Bitnami desligado; StatefulSet próprio |
 | spark-operator | 128Mi / 100m | 256Mi / 500m | — |
 | clickhouse-operator | 128Mi / 100m | 256Mi / 500m | — |
-| **soma dos permanentes** | **3,75 GiB / 1850m** | 9,25 GiB / 11,5 | — |
+| **soma dos permanentes** | **4,19 GiB / 1850m** | 9,75 GiB / 11,5 | — |
 | kube-system | ~0,4 GiB / 600m | — | coredns, provisioner, metrics-server |
 
 Spark é transitório e só existe durante a carga:

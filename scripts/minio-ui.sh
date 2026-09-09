@@ -1,34 +1,31 @@
 #!/usr/bin/env bash
-# Abre o console do MinIO para a carga manual dos Parquet.
+# Credenciais e contrato de layout do MinIO, para a carga manual dos Parquet.
 #
-#   bash scripts/minio-ui.sh            # imprime a URL e as credenciais
-#   bash scripts/minio-ui.sh --forward  # encaminha por localhost (necessario no Windows)
+#   bash scripts/minio-ui.sh            # credenciais e o layout esperado
+#   bash scripts/minio-ui.sh --abrir    # tambem abre a porta do console
+#
+# O acesso em si vive no scripts/ports.sh — este script nao encaminha porta nenhuma.
 set -euo pipefail
 
 NS=datamart
-PORTA_CONSOLE=9001
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usuario="$(kubectl -n "$NS" get secret minio-creds -o jsonpath='{.data.MINIO_ROOT_USER}' | base64 -d)"
 senha="$(kubectl -n "$NS" get secret minio-creds -o jsonpath='{.data.MINIO_ROOT_PASSWORD}' | base64 -d)"
-ip="$(minikube ip)"
-nodeport="$(kubectl -n "$NS" get svc minio-console -o jsonpath='{.spec.ports[?(@.name=="console")].nodePort}')"
 
 echo "usuario : $usuario"
 echo "senha   : $senha"
 echo
 
-if [[ "${1:-}" == "--forward" ]]; then
-  echo ">> encaminhando localhost:${PORTA_CONSOLE} -> console do MinIO"
-  echo ">> abra http://localhost:${PORTA_CONSOLE} e deixe este terminal aberto (Ctrl+C encerra)"
-  exec kubectl -n "$NS" port-forward --address 127.0.0.1 svc/minio-console "${PORTA_CONSOLE}:9001"
+if [[ "${1:-}" == "--abrir" ]]; then
+  bash "$ROOT/scripts/ports.sh" --only console
+  echo
+else
+  echo "Console em http://localhost:9001 — abra a porta antes, se ainda nao abriu:"
+  echo "  bash scripts/ports.sh --only console"
+  echo
 fi
 
-echo "Do WSL2, direto pelo NodePort:"
-echo "  http://${ip}:${nodeport}"
-echo
-echo "Do Windows, a rede do minikube nao e roteavel: use o encaminhamento."
-echo "  bash scripts/minio-ui.sh --forward   ->  http://localhost:${PORTA_CONSOLE}"
-echo
 echo "Layout esperado pelo honeycomb, dentro do bucket 'datamart':"
 echo "  data-bee_replication/data-bee_<filial>/<tabela>/*.parquet"
 echo
