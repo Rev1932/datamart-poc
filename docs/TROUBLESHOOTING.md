@@ -178,10 +178,10 @@ Jars assados: `delta-spark`, `delta-storage`, `hadoop-aws`, `aws-java-sdk-bundle
 **Causa raiz:** o Altinity operator **não** expõe uma condition `Ready`; ele usa
 `.status.status` (que fica `Completed` quando pronto).
 
-**Correção:** trocar a espera por poll no status agregado. Em `scripts/bootstrap.sh` e
-`infra/clickhouse/operator-install.md`:
+**Correção:** trocar a espera por `kubectl wait` com jsonpath no status agregado. Em
+`scripts/bootstrap.sh` e `infra/clickhouse/operator-install.md`:
 ```bash
-until [ "$(kubectl -n datamart get chi datamart -o jsonpath='{.status.status}')" = "Completed" ]; do sleep 10; done
+kubectl -n datamart wait --for=jsonpath='{.status.status}'=Completed chi/datamart --timeout=600s
 ```
 
 ---
@@ -383,5 +383,8 @@ kubectl -n datamart exec -it chi-datamart-datamart-0-0-0 -- \
 
 # Imagem no minikube / jars assados
 minikube image ls | grep datamart-spark
+# bash/zsh:
 eval "$(minikube docker-env)"; docker run --rm --user root datamart-spark:poc ls /opt/spark/jars
+# fish:
+minikube docker-env --shell fish | source; docker run --rm --user root datamart-spark:poc ls /opt/spark/jars
 ```

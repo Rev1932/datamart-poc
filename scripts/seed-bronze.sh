@@ -1,19 +1,43 @@
 #!/usr/bin/env bash
 # Popula a camada bronze no MinIO com Parquet de exemplo.
 #
-# PLACEHOLDER: a POC não inclui dados reais. Aponte SRC_DIR para uma pasta local
+# PLACEHOLDER: a POC não inclui dados reais. Aponte --src-dir para uma pasta local
 # com os .parquet da(s) tabela(s) de origem e este script os envia para o prefixo
 # bronze esperado pelo pipeline bronze_silver:
 #   s3a://datamart/data-bee_replication/data-bee_<config-name>/<table>/
 set -euo pipefail
 
+usage() {
+  cat <<EOF
+Uso: bash scripts/seed-bronze.sh --src-dir /caminho/para/parquets [--config-name unipac] [--table dw_andon_peso]
+
+  --src-dir CAMINHO      pasta local com os .parquet da tabela (obrigatório)
+  --config-name NOME     nome da config/filial (default: \$CONFIG_NAME ou unipac)
+  --table NOME           nome da tabela (default: \$TABLE ou dw_andon_peso)
+  -h, --help             mostra esta ajuda
+
+Fallback: as variáveis de ambiente SRC_DIR, CONFIG_NAME e TABLE continuam
+aceitas (flag tem precedência sobre elas).
+EOF
+}
+
 CONFIG_NAME="${CONFIG_NAME:-unipac}"
 TABLE="${TABLE:-dw_andon_peso}"
 SRC_DIR="${SRC_DIR:-}"
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --src-dir) SRC_DIR="$2"; shift 2 ;;
+    --config-name) CONFIG_NAME="$2"; shift 2 ;;
+    --table) TABLE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERRO: opção desconhecida '$1'." >&2; usage >&2; exit 1 ;;
+  esac
+done
+
 if [[ -z "$SRC_DIR" ]]; then
-  echo "Defina SRC_DIR=/caminho/para/parquets (contendo os .parquet de $TABLE)." >&2
-  echo "Ex.: SRC_DIR=./sample/$TABLE CONFIG_NAME=$CONFIG_NAME TABLE=$TABLE $0" >&2
+  echo "Defina --src-dir /caminho/para/parquets (contendo os .parquet de $TABLE)." >&2
+  echo "Ex.: bash $0 --src-dir ./sample/$TABLE --config-name $CONFIG_NAME --table $TABLE" >&2
   exit 1
 fi
 
