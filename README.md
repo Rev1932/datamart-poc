@@ -32,11 +32,36 @@ bash scripts/bootstrap.sh
 Sobe cluster → builda a imagem `datamart-spark:poc` no minikube → instala os operators
 (Spark, ClickHouse) → sobe MinIO e a instância ClickHouse → cria a tabela `ddl/01`.
 
+## Acessar os serviços
+
+```bash
+bash scripts/ports.sh              # abre as 7 portas em segundo plano; o terminal fica livre
+bash scripts/ports.sh --status     # o que está no ar
+bash scripts/ports.sh --creds      # usuários e senhas
+bash scripts/ports.sh --stop       # derruba tudo
+```
+
+| Chave | Endereço | Serviço |
+|---|---|---|
+| `console` | http://localhost:9001 | Console do MinIO |
+| `s3` | http://localhost:9000 | Endpoint S3 do MinIO |
+| `airflow` | http://localhost:8080 | Webserver do Airflow |
+| `clickhouse` | http://localhost:8123 | ClickHouse HTTP |
+| `ch-native` | `localhost:9010` | ClickHouse, protocolo nativo |
+| `postgres` | `localhost:5432` | PostgreSQL do braço de comparação |
+| `mongo` | `localhost:27017` | MongoDB do control plane |
+
+Cada porta roda sob um supervisor que reabre o encaminhamento sozinho quando a conexão cai — o que
+acontece a cada restart de pod. Use `--only console,s3` para agir sobre um subconjunto.
+
+Não há acesso por nome (`console.dtm.test` e afins): o caminho foi pesquisado e descartado — ver
+[docs/pesquisa-ingress-dns-wsl2.md](docs/pesquisa-ingress-dns-wsl2.md).
+
 ## Executar o pipeline
 
 ```bash
 # 1) popular a bronze (aponte SRC_DIR para seus .parquet — ver script)
-SRC_DIR=./sample/dw_andon_peso bash scripts/seed-bronze.sh
+bash scripts/seed-bronze.sh --src-dir ./sample/dw_andon_peso
 
 # 2) bronze -> silver (Delta)
 bash scripts/run-normalize.sh
@@ -48,7 +73,7 @@ bash scripts/run-ingest.sh
 ## Benchmark de merge
 
 ```bash
-N=5 SLEEP=15 bash benchmark/ingest-loop.sh
+env N=5 SLEEP=15 bash benchmark/ingest-loop.sh
 ```
 Dispara N ingestões (chaves sobrepostas), imprime `benchmark/merge-metrics.sql` a cada
 batch e faz `OPTIMIZE ... FINAL` no fim, comparando total físico × chaves únicas.
