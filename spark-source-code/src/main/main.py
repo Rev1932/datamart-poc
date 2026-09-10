@@ -51,11 +51,16 @@ def get_spark_param():
                         help='Horas de retenção do VACUUM. Default 168 (7 dias). Valores menores '
                              'apagam versões mais recentes e quebram o time travel nessa janela.')
 
-    # SUPER TENANT (--pipeline silver_super_tenant). Ignorado pelos demais pipelines.
+    # DATAMART (--pipeline datamart_pg | datamart_ch). Ignorados pelos demais pipelines.
     parser.add_argument('--janela_inicio', type=str, required=False,
                         help='Inicio da janela de carga, inclusivo (yyyy-MM-dd HH:mm:ss)')
     parser.add_argument('--janela_fim', type=str, required=False,
                         help='Fim da janela de carga, exclusivo (yyyy-MM-dd HH:mm:ss)')
+    parser.add_argument('--colunas_obrigatorias', type=str, nargs='*',
+                        help='Colunas em que nulo invalida a linha. Precisa ser IGUAL nos dois '
+                             'destinos, senao as contagens divergem por limpeza e nao por motor.')
+
+    # SUPER TENANT (--pipeline silver_super_tenant). Ignorado pelos demais pipelines.
     parser.add_argument('--source_tenants', type=str, required=False,
                         help='JSON com [{"tenant": "<cliente>", "base_path": "s3a://<bucket>"}, ...]. '
                              'Cada cliente de origem vira uma FILIAL do super tenant.')

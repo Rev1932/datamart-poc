@@ -71,7 +71,7 @@ def test_to_dict_expoe_todos_os_campos():
         "pipeline", "tenant_name", "filial_name", "table_name",
         "primary_key", "is_merge_schema", "colunas_zorder",
         "delta_layer", "retention_hours", "source_tenants",
-        "janela_inicio", "janela_fim",
+        "janela_inicio", "janela_fim", "colunas_obrigatorias",
     }
 
 
@@ -86,6 +86,16 @@ def test_janela_ausente_fica_none():
     config = PipelineConfig.from_args(_args())
     assert config.janela_inicio is None
     assert config.janela_fim is None
+
+
+def test_colunas_obrigatorias_vem_dos_args():
+    config = PipelineConfig.from_args(_args(colunas_obrigatorias=["timestamp", "filial"]))
+    assert config.colunas_obrigatorias == ["timestamp", "filial"]
+
+
+def test_colunas_obrigatorias_ausente_fica_lista_vazia():
+    """Vazio desliga a limpeza: quem nao declara mantem o comportamento antigo."""
+    assert PipelineConfig.from_args(_args()).colunas_obrigatorias == []
 
 
 def test_parametros_de_manutencao_vem_dos_args():

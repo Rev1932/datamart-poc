@@ -95,6 +95,9 @@ class PipelineConfig:
     # declaram JANELA_INICIO/JANELA_FIM; ignorada pelas demais.
     janela_inicio: Optional[str] = None
     janela_fim: Optional[str] = None
+    # Colunas em que nulo invalida a linha. Vazio desliga a limpeza — e o default, para nao
+    # mudar o comportamento de quem nao declara.
+    colunas_obrigatorias: List[str] = field(default_factory=list)
     # Super tenant (pipeline `silver_super_tenant`). Ignorado pelos demais pipelines.
     # SOMENTE LEITURA: `dataclasses.replace` no TableRunner copia a REFERENCIA desta lista para
     # as N threads de tabela. Quem consome deve derivar uma copia local.
@@ -121,6 +124,7 @@ class PipelineConfig:
             retention_hours=int(getattr(args, 'retention_hours', None) or 168),
             janela_inicio=getattr(args, 'janela_inicio', None),
             janela_fim=getattr(args, 'janela_fim', None),
+            colunas_obrigatorias=getattr(args, 'colunas_obrigatorias', None) or [],
             source_tenants=normalize_source_tenants(getattr(args, 'source_tenants', None)),
         )
     

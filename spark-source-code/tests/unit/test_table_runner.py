@@ -61,14 +61,22 @@ def _runner(spark, config_base, executar, max_workers=4):
 
 def test_normaliza_lista_valida():
     assert normalize_tables([{"name": " dw_a ", "chave_pk": ["id", " filial "]}]) == [
-        {"name": "dw_a", "chave_pk": ["id", "filial"]}
+        {"name": "dw_a", "chave_pk": ["id", "filial"], "colunas_obrigatorias": []}
     ]
 
 
 def test_normaliza_chave_pk_escalar():
     """O config do Mongo pode trazer a PK como string em vez de lista."""
     assert normalize_tables([{"name": "dw_a", "chave_pk": "id"}]) == [
-        {"name": "dw_a", "chave_pk": ["id"]}
+        {"name": "dw_a", "chave_pk": ["id"], "colunas_obrigatorias": []}
+    ]
+
+
+def test_normaliza_colunas_obrigatorias():
+    assert normalize_tables([
+        {"name": "dw_a", "chave_pk": ["id"], "colunas_obrigatorias": [" timestamp ", "filial", ""]}
+    ]) == [
+        {"name": "dw_a", "chave_pk": ["id"], "colunas_obrigatorias": ["timestamp", "filial"]}
     ]
 
 

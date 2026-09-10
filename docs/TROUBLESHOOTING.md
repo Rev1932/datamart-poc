@@ -18,6 +18,9 @@ ClickHouse (Altinity operator), Spark Operator (kubeflow).
 10. [Pipeline `datamart` trava no `extract` / apiserver TLS timeout](#10-pipeline-datamart-trava-no-extract--apiserver-tls-timeout--em-aberto)
 11. [`save` no ClickHouse falha com `Magic is not correct` (LZ4) — incompat de versão](#11-save-no-clickhouse-falha-com-magic-is-not-correct-lz4--incompat-de-versao)
 12. [`minikube image load` não substitui tag existente](#12-minikube-image-load-nao-substitui-tag-existente)
+13. [`spark-defaults.conf` da imagem não chega ao driver sob o operator](#13-spark-defaultsconf-da-imagem-nao-chega-ao-driver-sob-o-operator)
+14. [DagRun verde sem executar nenhuma task](#14-dagrun-verde-sem-executar-nenhuma-task)
+15. [`SparkFileNotFoundException` na silver: arquivo no log Delta, ausente no bucket](#15-sparkfilenotfoundexception-na-silver)
 
 ---
 
@@ -399,6 +402,99 @@ Aplicado em `scripts/bootstrap.sh`. O nome `minikube` é o do container do nó n
 > **Este é o modo de falha mais caro do repositório.** Uma imagem que não atualiza produz um
 > job que roda verde com o código errado — e a evidência do benchmark sai inválida sem que
 > nada falhe. Conferir o ID da imagem dentro do nó depois de todo build.
+
+---
+
+## 13. `spark-defaults.conf` da imagem não chega ao driver sob o operator
+
+> Status: **resolvido** (2026-09-10).
+
+**Sintoma:** a primeira carga do datamart morre no `spark.sql()`, antes de ler um byte:
+
+```
+[UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY] Unsupported data source type
+for direct query on files: delta; line 27 pos 5
+```
+
+A imagem tem `spark.sql.extensions` e `spark.sql.catalog.spark_catalog` no
+`/opt/spark/conf/spark-defaults.conf`, e o `delta.\`s3a://...\`` funciona rodando o mesmo código
+localmente na mesma imagem.
+
+**Causa raiz:** em cluster mode o Spark-on-K8s monta o próprio `SPARK_CONF_DIR` no pod do driver,
+com o conf que o `spark-submit` gera. O arquivo da imagem fica **sombreado** — o próprio
+`spark-defaults.conf` do honeycomb avisa disso, mas atribui o efeito ao feature gate
+`LoadSparkDefaults` do operator de produção. Acontece sem o feature gate: é o mecanismo padrão.
+
+**Correção:** tudo que o job precisa vai no `sparkConf` do SparkApplication. Em
+`airflow/dags/manifests/spark-honeycomb-datamart.yaml`: as duas linhas do Delta, o endpoint e o
+`path.style.access` do MinIO local, o provider de credenciais, e
+`spark.sql.catalogImplementation: in-memory` — não há Hive Metastore aqui, e ler Delta por caminho
+dispensa catálogo.
+
+> **Nada nesta classe de erro aponta para a config.** A mensagem fala de `delta` como se o formato
+> não existisse; a extensão está na imagem, e o teste local passa. Ao portar um job para o Spark
+> Operator, presuma que **nenhuma** linha do conf da imagem vale.
+
+---
+
+## 14. DagRun verde sem executar nenhuma task
+
+> Status: **resolvido** (2026-09-10).
+
+**Sintoma:** `airflow dags trigger k8s_acme_datamart -e 2025-08-15` cria o run, ele termina em
+**63 ms** com `state=success`, e `airflow tasks states-for-dag-run` responde `No data found`.
+Nenhum pod, nenhum log, nenhum erro. `airflow tasks list` mostra as 5 tasks e o DAG serializado
+também — a DAG está íntegra.
+
+**Causa raiz:** a `logical_date` do trigger (2025-08-15) é anterior ao `start_date` da DAG
+(2026-01-01). O Airflow não cria task instance antes do `start_date`, e um DagRun sem task instance
+não tem o que falhar: fecha como sucesso.
+
+**Correção:** `start_date` recuado para 2025-01-01, antes do dado mais antigo da silver (2025-08).
+
+> **É a pior variante do "verde sem fazer nada"**, porque o alvo da conferência é o estado do run —
+> e ele diz `success`. Ao disparar uma janela histórica, confira a contagem de task instances, não
+> o estado do DagRun.
+
+---
+
+## 15. `SparkFileNotFoundException` na silver
+
+> Status: **em aberto** — depende de recópia do dado.
+
+**Sintoma:** o job planeja a query, roda ~15 stages e falha na leitura:
+
+```
+org.apache.spark.SparkFileNotFoundException: No such file or directory:
+s3a://datamart/business_datavault_data-bee/dw_andon_peso/source=data-bee_limeira/part-00000-ac3896be....parquet
+```
+
+**Diagnóstico:** o snapshot corrente de cada tabela é o último checkpoint mais os commits `.json`
+posteriores. Conferido arquivo a arquivo contra o bucket:
+
+| Tabela | Versão | Arquivos no snapshot | Faltando no bucket |
+|---|---|---|---|
+| `dw_andon_peso` | 3280 | 5 | **2** |
+| `dw_ordem_producao` | 1120 | 5 | 0 |
+| `dw_unidade_producao` | 290 | 5 | 0 |
+| `dw_material` | 500 | 5 | 0 |
+
+Os dois ausentes são um arquivo de `source=data-bee_limeira` e um de **`source=data-bee_uberaba`** —
+uma quinta filial que não existe no bucket: só limeira, maracanau, paulinia e pompeia foram copiadas.
+
+Não adianta restringir a janela: o predicado é `to_timestamp(substring(data_hora, 1, 23), ...)`, não
+uma comparação direta na coluna, então o Delta não consegue usar as estatísticas para pular arquivo.
+
+**Dois caminhos, e a escolha é de quem ingeriu o dado:**
+
+| Caminho | Efeito |
+|---|---|
+| Recopiar `dw_andon_peso` da origem | Recupera as linhas. É o certo se `uberaba` deve estar no experimento |
+| `FSCK REPAIR TABLE` no Delta | Tira do log as referências mortas. A tabela volta a ler, **sem** as linhas desses dois arquivos |
+
+> **Contar os arquivos do bucket não detecta isso.** Há 52 parquet em `dw_andon_peso`, dez vezes o
+> que o snapshot referencia — o resto é versão antiga ainda não expurgada. A conferência tem que ser
+> contra o `_delta_log`, não contra a listagem.
 
 ---
 

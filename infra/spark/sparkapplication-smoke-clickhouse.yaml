@@ -28,8 +28,14 @@ spec:
     memoryOverhead: "384m"
     serviceAccount: spark
     envFrom:
+      # O smoke roda como o loader do acme: as DATAMART_CH_* sairam do spark-secrets em T2.6,
+      # quando a config passou a ser por tenant.
       - secretRef:
           name: spark-secrets
+      - configMapRef:
+          name: spark-acme-config
+      - secretRef:
+          name: spark-acme-secret
     volumeMounts:
       - name: smoke
         mountPath: /opt/smoke
@@ -40,8 +46,14 @@ spec:
     memory: "1g"
     memoryOverhead: "384m"
     envFrom:
+      # O smoke roda como o loader do acme: as DATAMART_CH_* sairam do spark-secrets em T2.6,
+      # quando a config passou a ser por tenant.
       - secretRef:
           name: spark-secrets
+      - configMapRef:
+          name: spark-acme-config
+      - secretRef:
+          name: spark-acme-secret
     volumeMounts:
       - name: smoke
         mountPath: /opt/smoke

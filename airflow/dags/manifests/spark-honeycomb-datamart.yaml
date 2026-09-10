@@ -1,0 +1,93 @@
+# Template das duas cargas do datamart. A DAG resolve TENANT, VERSION e `arguments`;
+# o que difere entre os dois braços é só o `--pipeline`, então o template é um só.
+#
+# Espelha dtlk-airflow-pipeline/dags/manifests/spark-honeycomb-gold.yaml, com o que muda
+# no minikube: sem nodeSelector, sem toleration, sem imagePullSecret, e recursos que cabem
+# no nó de 15,5 GiB.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: spark-TENANT-datamart
+  namespace: datamart
+  labels:
+    app.kubernetes.io/name: spark-TENANT
+    app.kubernetes.io/part-of: datamart-poc
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  # VERSION vem do `honeycomb_version` do config do tenant. A imagem é carregada no nó por
+  # `docker load`; não há registry alcançável daqui, daí o Never.
+  image: "honeycomb:VERSION"
+  imagePullPolicy: Never
+  mainApplicationFile: "local:///opt/spark/app/src/main/main.py"
+  sparkVersion: "3.5.8"
+  restartPolicy:
+    type: Never
+  timeToLiveSeconds: 3600
+  volumes:
+    - name: spark-local-dir-1
+      emptyDir:
+        sizeLimit: 8Gi
+  arguments: []
+
+  sparkConf:
+    # O spark-defaults.conf da imagem NAO chega ao driver: o Spark-on-K8s monta o proprio
+    # SPARK_CONF_DIR e sombreia /opt/spark/conf. Tudo que o job precisa vem daqui.
+    # Sem as duas linhas do Delta a query morre em UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY.
+    "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
+    "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    # Sem Hive Metastore aqui; a silver e lida por caminho Delta, que dispensa catalogo.
+    "spark.sql.catalogImplementation": "in-memory"
+    "spark.hadoop.fs.s3a.endpoint": "http://minio.datamart.svc.cluster.local:9000"
+    "spark.hadoop.fs.s3a.path.style.access": "true"
+    "spark.hadoop.fs.s3a.connection.ssl.enabled": "false"
+    "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    "spark.sql.shuffle.partitions": "8"
+  driver:
+    cores: 1
+    coreRequest: "400m"
+    coreLimit: "1"
+    memory: "2g"
+    memoryOverhead: "512m"
+    serviceAccount: spark
+    labels:
+      app.kubernetes.io/name: spark-TENANT
+      app.kubernetes.io/part-of: datamart-poc
+    env:
+      - name: PYTHONPATH
+        value: "/opt/spark/app/src/main"
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+      - configMapRef:
+          name: spark-TENANT-config
+      - secretRef:
+          name: spark-TENANT-secret
+    volumeMounts:
+      - name: spark-local-dir-1
+        mountPath: /tmp/spark-local
+  executor:
+    cores: 1
+    coreRequest: "400m"
+    coreLimit: "1"
+    instances: 2
+    memory: "2g"
+    memoryOverhead: "512m"
+    labels:
+      app.kubernetes.io/name: spark-TENANT
+      app.kubernetes.io/part-of: datamart-poc
+    env:
+      - name: PYTHONPATH
+        value: "/opt/spark/app/src/main"
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+      - configMapRef:
+          name: spark-TENANT-config
+      - secretRef:
+          name: spark-TENANT-secret
+    volumeMounts:
+      - name: spark-local-dir-1
+        mountPath: /tmp/spark-local

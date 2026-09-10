@@ -68,7 +68,9 @@ scheduler:
         - |
           set -eu
           cp -L /dags-src/*.py /opt/airflow/dags/
-          ls -l /opt/airflow/dags/
+          mkdir -p /opt/airflow/dags/manifests
+          cp -L /dags-src/*.yaml /opt/airflow/dags/manifests/
+          ls -l /opt/airflow/dags/ /opt/airflow/dags/manifests/
       volumeMounts:
         - name: dags-src
           mountPath: /dags-src
@@ -107,7 +109,9 @@ webserver:
         - |
           set -eu
           cp -L /dags-src/*.py /opt/airflow/dags/
-          ls -l /opt/airflow/dags/
+          mkdir -p /opt/airflow/dags/manifests
+          cp -L /dags-src/*.yaml /opt/airflow/dags/manifests/
+          ls -l /opt/airflow/dags/ /opt/airflow/dags/manifests/
       volumeMounts:
         - name: dags-src
           mountPath: /dags-src

@@ -42,6 +42,7 @@ helm upgrade --install spark-operator spark-operator/spark-operator \
   -n spark-operator --create-namespace -f infra/spark/operator-values.yaml
 kubectl apply -f infra/spark/spark-rbac.yaml
 kubectl apply -f infra/spark/spark-secrets.yaml
+kubectl apply -f infra/spark/spark-tenant-config.yaml
 
 echo "==> 6/12 ClickHouse operator + instância"
 kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/release-0.24.0/deploy/operator/clickhouse-operator-install-bundle.yaml
@@ -84,8 +85,12 @@ kubectl -n datamart wait --for=condition=complete job/mongo-seed --timeout=300s
 echo "==> 10/12 Airflow"
 kubectl apply -f infra/airflow/postgres-metadata.yaml
 kubectl -n airflow rollout status statefulset/airflow-postgres --timeout=300s
+# O --from-file de diretorio ignora subpastas: o template do SparkApplication entra a parte,
+# e o initContainer o recoloca em dags/manifests/, que e onde a DAG o procura.
 kubectl -n airflow create configmap airflow-dags \
-  --from-file=airflow/dags/ --dry-run=client -o yaml | kubectl apply -f -
+  --from-file=airflow/dags/ \
+  --from-file=airflow/dags/manifests/spark-honeycomb-datamart.yaml \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f infra/airflow/rbac-spark.yaml
 helm repo add apache-airflow https://airflow.apache.org >/dev/null 2>&1 || true
 helm repo update >/dev/null

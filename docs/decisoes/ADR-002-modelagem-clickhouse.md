@@ -66,7 +66,7 @@ Granularidade diária geraria partes demais para o volume da POC.
 | Escolha | Efeito |
 |---|---|
 | `LowCardinality(String)` | Dicionariza colunas com poucos valores distintos: corta disco e acelera `GROUP BY` |
-| `Decimal(9,3)` em vez de `DOUBLE` | A query hoje faz `CAST(... AS DOUBLE)`. O `get_type_sql` do Postgres mapeia isso para `DOUBLE PRECISION`; sem alinhar os dois braços, `sum(valor)` diverge no portão de corretude |
+| `Decimal(9,3)` em vez de `DOUBLE` | Aplicado em T2.4: a query passou a fazer `CAST(... AS DECIMAL(9,3))`, e o `get_type_sql` do Postgres traduz `DecimalType` para `NUMERIC(9,3)`. Com `DOUBLE` os dois braços divergiriam em `sum(valor)` no portão de corretude |
 | Precisão 9, não 18 | A origem é `Decimal(5,1)`, medida no Parquet real. Precisão até 9 cabe em `Decimal32` (4 bytes); de 10 a 18 vira `Decimal64` (8) |
 | `Nullable` removido | Cada coluna `Nullable` carrega uma coluna extra de máscara. Além disso, `PARTITION BY` e chave de ordenação exigem não-nulo |
 

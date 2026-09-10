@@ -91,7 +91,8 @@ def tabela(cliente, config_ch):
     cliente.descartar(nome)
 
 
-def _repositorio(spark_ch, config_ch, tabela, tmp_path, janela_inicio, janela_fim="2026-10-01 00:00:00"):
+def _repositorio(spark_ch, config_ch, tabela, tmp_path, janela_inicio, janela_fim="2026-10-01 00:00:00",
+                 colunas_obrigatorias=()):
     from repo.repository import RepositoryDatamartClickhouse
     from utils.pipeline_config import PipelineConfig
 
@@ -110,6 +111,7 @@ def _repositorio(spark_ch, config_ch, tabela, tmp_path, janela_inicio, janela_fi
         primary_key=["filial", "banco", "unidade_producao_id"],
         janela_inicio=janela_inicio,
         janela_fim=janela_fim,
+        colunas_obrigatorias=list(colunas_obrigatorias),
     )
     return RepositoryDatamartClickhouse(spark_ch, environment, runtime, str(tmp_path))
 
@@ -180,3 +182,22 @@ def test_dado_anterior_a_janela_e_recusado(spark_ch, config_ch, tabela, tmp_path
 
     with pytest.raises(ValueError, match="anterior"):
         repo.write(dados)
+
+
+def test_transform_descarta_nulo_e_a_troca_aceita(spark_ch, config_ch, cliente, tabela, tmp_path):
+    """`timestamp` nulo derruba a carga: é coluna de partição e de ordenação no destino."""
+    from pyspark.sql import functions as F
+
+    repo = _repositorio(spark_ch, config_ch, tabela, tmp_path, "2026-09-01 00:00:00",
+                        colunas_obrigatorias=["timestamp", "filial", "banco", "unidade_producao_id"])
+    dados = _dados(spark_ch, [
+        ("LIMEIRA", "dw_limeira", 1, "2026-09-05 10:00:00", 10.5),
+        ("LIMEIRA", "dw_limeira", 2, "nao e timestamp", 20.5),
+    ])
+    assert dados.filter(F.col("timestamp").isNull()).count() == 1
+
+    limpo = repo.transform(dados)
+    assert limpo.count() == 1
+
+    repo.write(limpo)
+    assert cliente.contar(tabela) == 1

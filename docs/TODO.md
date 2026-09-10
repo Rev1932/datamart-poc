@@ -12,7 +12,7 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 13 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1, T2.2, T2.3 e T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda.
+**Progresso:** 14 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1 a T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda. T2.6 entregue e disparada — o aceite espera a recópia de `dw_andon_peso`.
 
 Execução dos testes registrada em [TESTES.md](TESTES.md) — 60 testes, **1 defeito aberto**:
 [D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup), sem correção possível e mitigado.
@@ -306,24 +306,56 @@ pulam sozinhos quando `DATAMART_CH_*` não está no ambiente.
 `load_dts` é `current_timestamp()` avaliado em cada braço: os dois destinos terão valores diferentes
 nessa coluna **por construção**. Comparação linha a linha no E3 precisa excluí-la.
 
-### ⬜ T2.4 — Braço Postgres e simetria experimental
-Aceite: o diff entre os dois repositórios toca **exclusivamente** `write()`
+### ✅ T2.4 — Braço Postgres e simetria experimental
+Aceite: `read` e `transform` são o **mesmo objeto de função** nos dois braços — asserção executável,
+não conferência de olho. **190 passed** na unidade, **6 passed** no Postgres real, **6 passed** no
+ClickHouse real
 
-Desbloqueada em 2026-09-10: `dm_acme` e `dm_globex` existem. O `bootstrap.sh` não chamava o
-`infra/postgres/job-init.yaml`, que já estava pronto desde T1.4. Não falta DDL de tabela — o
-`RepositoryGoldDatamart.write()` cria staging e alvo por conta própria.
+- [x] Base `RepositoryDatamart` com `read`/`transform`; os dois braços sobrescrevem só `write`
+- [x] `.na.drop` no `transform` compartilhado, dirigido por `colunas_obrigatorias`
+- [x] `DECIMAL(9,3)` em vez de `DOUBLE`, na query — os 4 casts, incluindo o do `WHERE`
+- [x] Chave `datamart_pg` na factory
+- [x] `colunas_obrigatorias` no `PipelineConfig`, no `main.py` e no `--tables_json`, mais a seed
 
-- [ ] Confirmar que os dois braços herdam `read()`/`transform()` de `PipelineGold`
-- [ ] `.na.drop` no `transform` compartilhado
-- [ ] `DECIMAL(9,3)` em vez de `DOUBLE`, na query — um único lugar possível. Origem é `Decimal(5,1)`
-- [ ] Chave `datamart_pg` na factory
+A herança não veio de `PipelineGold`, como a v3.0 previa: na 3.3.0 o braço Postgres é
+`RepositoryGoldDatamart`, um `Repository`, e `PipelineGold` grava Delta. A base nova fica no nível do
+repositório, que é onde `read`/`transform` de fato vivem.
 
-### ⬜ T2.6 — DAG
-Aceite: um trigger na DAG carrega os dois destinos, com a mesma contagem na partição
+**A limpeza é configurável, não constante.** `["timestamp", "filial", "banco", "unidade_producao_id"]`
+é específico de `fact_200_cep`; fixá-la na classe quebraria toda tabela gold que não tenha essas
+colunas. Vazio é o default e desliga a limpeza, então `gold_datamart` em produção não muda.
 
-- [ ] `k8s_<tenant>_datamart.py` — duas tasks, **em sequência**
-- [ ] 2 manifestos com placeholders `TENANT`/`VERSION`
-- [ ] `JANELA_INICIO`/`JANELA_FIM` do `data_interval` do DagRun
+**Defeito encontrado no caminho:** `tests/integration/conftest.py` construía `PipelineConfig` com
+`pipeline_type`/`config_name`/`topic`/`chave_pk`, campos que não existem mais. Os 6 testes do braço
+Postgres erravam no setup **desde antes da 3.3.0** e ninguém viu, porque `-m "not integration"` os
+deselecionava. Corrigido e executados pela primeira vez.
+
+### 🟡 T2.6 — DAG
+Aceite: um trigger na DAG carrega os dois destinos, com a mesma contagem na partição.
+**Entregue e disparada; o aceite não fecha por falta de dado** — ver
+[incidente #15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver)
+
+- [x] `k8s_acme_datamart.py` e `k8s_globex_datamart.py` sobre `datamart_dag.py`, duas cargas **em sequência**
+- [x] 1 manifesto com placeholders `TENANT`/`VERSION` — o que difere entre os braços é só `--pipeline`
+- [x] Janela do `data_interval` do DagRun, calculada **uma vez** e consumida pelos dois
+- [x] `spark-<tenant>-config` e `spark-<tenant>-secret`, que dão sentido ao placeholder `TENANT`
+- [x] Catálogo ClickHouse na `SparkSessionFactory` — lacuna de T2.3, só visível fora do teste
+- [ ] Carga concluída nos dois destinos
+
+O CR renderizado prova a cadeia até a borda do dado:
+
+```
+--pipeline datamart_pg --tenant_name acme --filial_name acme --table_name fact_200_cep
+--janela_inicio 2025-08-01 00:00:00 --janela_fim 2025-09-01 00:00:00
+--colunas_obrigatorias timestamp filial banco unidade_producao_id
+--primary_key filial banco andon_peso_id
+```
+
+Janela alinhada ao mês a partir de `data_interval_start=2025-08-21`, `VERSION`→`poc`,
+`TENANT`→`acme` nas três referências de `envFrom`. O job planeja a query, resolve o Delta e roda
+15 stages; morre em `SparkFileNotFoundException`, porque **2 dos 5 arquivos do snapshot de
+`dw_andon_peso` não foram copiados** — um de `limeira` e um de `uberaba`, filial que não existe no
+bucket. As outras três tabelas estão completas.
 
 Uma DAG, não duas encadeadas por Dataset: sem gold materializada não há produtor, e o mesmo DagRun é o
 que garante janela idêntica nos dois braços. Em sequência porque dois drivers Spark não cabem no nó.
@@ -383,7 +415,9 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 
 ### Abertas
 
-Nenhuma.
+| # | O quê | Bloqueia |
+|---|---|---|
+| 9 | **Recopiar `dw_andon_peso`** para o MinIO: 2 dos 5 arquivos do snapshot Delta não estão no bucket, um deles de `source=data-bee_uberaba`, filial ausente. Alternativa: `FSCK REPAIR TABLE`, que faz a tabela voltar a ler **sem** essas linhas | Aceite de T2.6 e **todo o E3** |
 
 ### Encerradas
 
