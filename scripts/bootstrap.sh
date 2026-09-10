@@ -14,12 +14,13 @@ echo "==> 1/12 cluster local"
 bash cluster/minikube-up.sh
 
 echo "==> 2/12 imagens (honeycomb + jars do ClickHouse, e Airflow)"
-# Nao reconstroi o honeycomb: a imagem publicada ja tem Spark, Delta, hadoop-aws e o app.
-# O Dockerfile so acrescenta os jars do connector.
-docker image inspect hub.datawake.cloud/dw-dados/honeycomb:latest >/dev/null 2>&1 \
-  || docker pull hub.datawake.cloud/dw-dados/honeycomb:latest
+# A base sai do Dockerfile da propria release 3.3.0, em spark-source-code/: o registry
+# nao publica essa tag. Depois images/spark/ so acrescenta os jars do connector.
+docker build -f spark-source-code/Dockerfile -t honeycomb:3.3.0-local spark-source-code/
 docker build -f images/spark/Dockerfile -t honeycomb:poc images/spark/
-minikube image load honeycomb:poc
+# `minikube image load` e no-op silencioso quando a tag ja existe no no, mesmo com
+# --overwrite: o cluster seguiria rodando a imagem velha. Carrega pelo daemon do no.
+docker save honeycomb:poc | docker exec -i minikube docker load
 
 # Airflow: a imagem de producao ja tem 2.11.2 e pymongo; nada a construir.
 minikube image ls 2>/dev/null | grep -q datawake-airflow \
@@ -63,6 +64,10 @@ bash scripts/verify-rbac.sh
 echo "==> 8/12 PostgreSQL (braço de comparação)"
 kubectl apply -f infra/postgres/postgres-statefulset.yaml
 kubectl -n datamart rollout status statefulset/postgres --timeout=300s
+kubectl -n datamart create configmap pg-init-sql --from-file=ddl/postgres/ \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f infra/postgres/job-init.yaml
+kubectl -n datamart wait --for=condition=complete job/pg-init --timeout=300s
 
 echo "==> 9/12 MongoDB (control plane das DAGs)"
 kubectl apply -f infra/mongodb/mongodb-statefulset.yaml
