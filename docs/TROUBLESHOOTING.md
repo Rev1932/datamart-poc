@@ -485,16 +485,38 @@ uma quinta filial que não existe no bucket: só limeira, maracanau, paulinia e 
 Não adianta restringir a janela: o predicado é `to_timestamp(substring(data_hora, 1, 23), ...)`, não
 uma comparação direta na coluna, então o Delta não consegue usar as estatísticas para pular arquivo.
 
-**Dois caminhos, e a escolha é de quem ingeriu o dado:**
+**Repetir o mirror não resolve — e piorou.** Segunda execução em 2026-09-10 14:00: trouxe o log da
+versão 3280 à 3307 e **um** arquivo de dados. Os ausentes passaram de 2 para 5 de 5.
+
+Réplica do log da v2860 à v3307, conferindo o conjunto vivo de cada versão contra o bucket:
+
+| | |
+|---|---|
+| Versões com snapshot completo | **0 de 448** |
+| Melhor caso | 1 arquivo ausente; a versão mais recente assim é a **v3254** |
+| Estado corrente (v3307) | 5 de 5 ausentes |
+
+**Duas causas independentes:**
+
+1. **`source=data-bee_uberaba` nunca foi copiada** — zero arquivos, nas duas execuções. É o único
+   ausente na v3254; limeira, maracanau, paulinia e pompeia estão íntegras ali (11,17 M de linhas).
+2. **A tabela é reescrita a cada commit**: 5 arquivos vivos, um por filial, e cada commit troca o de
+   uma. O `mc mirror` copia `_delta_log/` **antes** de `source=.../` — ordem lexical, `_` (0x5F) vem
+   antes de `s` (0x73). O log chega apontando para arquivos que a cópia ainda não trouxe, e numa
+   tabela em escrita contínua isso nunca converge.
+
+**Caminhos, em ordem de preferência:**
 
 | Caminho | Efeito |
 |---|---|
-| Recopiar `dw_andon_peso` da origem | Recupera as linhas. É o certo se `uberaba` deve estar no experimento |
-| `FSCK REPAIR TABLE` no Delta | Tira do log as referências mortas. A tabela volta a ler, **sem** as linhas desses dois arquivos |
+| `DEEP CLONE` da origem para um caminho estático, e espelhar o clone | Snapshot imóvel. É o único que resolve a causa 2 de vez |
+| Parar a escrita na origem durante o mirror | Resolve enquanto durar a parada |
+| Copiar dados → log → **dados de novo**, até estabilizar | Converge se a taxa de commit for menor que a de cópia |
+| `RESTORE TO VERSION AS OF 3254` + `FSCK REPAIR TABLE` | Não toca na origem. Deixa a tabela legível com **4 das 5 filiais**, 11,17 M de linhas. Perde `uberaba` |
 
-> **Contar os arquivos do bucket não detecta isso.** Há 52 parquet em `dw_andon_peso`, dez vezes o
-> que o snapshot referencia — o resto é versão antiga ainda não expurgada. A conferência tem que ser
-> contra o `_delta_log`, não contra a listagem.
+> **Contar arquivo no bucket não detecta nada disso.** Há 53 parquet de dados em `dw_andon_peso` e o
+> snapshot referencia 5 — o resto é versão superada. Foi assim que a primeira medição de
+> distribuição saiu 7,7× maior que a real. A conferência é sempre contra o `_delta_log`.
 
 ---
 

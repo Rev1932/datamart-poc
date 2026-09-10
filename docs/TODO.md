@@ -417,7 +417,7 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 
 | # | O quê | Bloqueia |
 |---|---|---|
-| 9 | **Recopiar `dw_andon_peso`** para o MinIO: 2 dos 5 arquivos do snapshot Delta não estão no bucket, um deles de `source=data-bee_uberaba`, filial ausente. Alternativa: `FSCK REPAIR TABLE`, que faz a tabela voltar a ler **sem** essas linhas | Aceite de T2.6 e **todo o E3** |
+| 9 | **Cópia consistente de `dw_andon_peso`.** O segundo mirror piorou: 0 de 448 versões têm snapshot completo no bucket. Duas causas — `source=data-bee_uberaba` nunca foi copiada, e o `mc mirror` traz `_delta_log/` antes dos dados numa tabela reescrita a cada commit. Caminhos em [incidente #15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver); o mais barato é `RESTORE TO VERSION AS OF 3254` + `FSCK`, que dá 4 filiais e 11,17 M de linhas sem tocar na origem | Aceite de T2.6 e **todo o E3** |
 
 ### Encerradas
 

@@ -780,22 +780,47 @@ O #15 é dado, não código, e é o que impede o aceite: a carga morre em
 
 #### Distribuição de `data_hora` na silver
 
-Medida pelo `s3()` do ClickHouse sobre os 52 parquet de `dw_andon_peso` (12,8 GB): **85,8 M de linhas
-em 14 meses**, de 2025-08 a 2026-09.
+> **Medição corrigida em 2026-09-10.** A primeira leitura varreu os 52 parquet do diretório e deu
+> 85,8 M de linhas. Está errada por **7,7×**: o diretório guarda versões superadas do Delta, não só
+> o snapshot vivo. A contagem válida é sobre os arquivos que o `_delta_log` referencia — 4 deles,
+> um por filial. **Contar arquivo em bucket de tabela Delta não mede a tabela.**
+
+Snapshot v3254 de `dw_andon_peso`, 4 filiais: **11,17 M de linhas em 14 meses**, de 2025-08 a 2026-09.
 
 | Mês | Linhas | | Mês | Linhas |
 |---|---:|---|---|---:|
-| 2025-08 | 91.458 | | 2026-03 | 4.204.252 |
-| 2025-09 | 1.563.750 | | 2026-04 | 5.388.312 |
-| 2025-10 | 3.870.460 | | 2026-05 | 4.959.210 |
-| 2025-11 | 3.429.937 | | 2026-06 | 8.933.859 |
-| 2025-12 | 6.628.684 | | 2026-07 | 17.435.840 |
-| 2026-01 | 2.056.483 | | 2026-08 | 20.753.187 |
-| 2026-02 | 3.247.167 | | 2026-09 | 3.254.447 |
+| 2025-08 | 30.486 | | 2026-03 | 422.293 |
+| 2025-09 | 227.166 | | 2026-04 | 642.638 |
+| 2025-10 | 445.919 | | 2026-05 | 551.796 |
+| 2025-11 | 497.617 | | 2026-06 | 897.336 |
+| 2025-12 | 541.897 | | 2026-07 | 2.459.718 |
+| 2026-01 | 188.120 | | 2026-08 | **3.332.735** |
+| 2026-02 | 303.276 | | 2026-09 | 633.310 |
 
-Uma execução típica de um mês toca **uma** partição — é o insumo que faltava para
+Uma execução de um mês toca **uma** partição — é o insumo que faltava para
 [T3.0](epicos/E3-validacao.md#t30--portão-de-janela) decidir entre `REPLACE PARTITION` e
 `ReplacingMergeTree`. A medição está aqui, a decisão continua sendo daquela task.
+
+#### Por que o segundo mirror piorou o quadro
+
+Réplica do log de `dw_andon_peso` da versão 2860 à 3307 — 448 versões — conferindo o conjunto vivo
+de cada uma contra os 53 arquivos de dados do bucket:
+
+| | |
+|---|---|
+| Versões com snapshot **completo** | **0 de 448** |
+| Melhor caso | 1 arquivo ausente, em 9 versões; a mais recente é a v3254 |
+| Estado corrente (v3307) | 5 de 5 ausentes |
+
+Duas causas independentes:
+
+1. **`source=data-bee_uberaba` nunca foi copiada.** Zero arquivos, nas duas execuções do mirror. É o
+   único ausente na v3254 — as outras quatro filiais estão íntegras.
+2. **A tabela é reescrita a cada commit.** São 5 arquivos vivos, um por filial, e cada commit troca o
+   de uma delas. O `mc mirror` copia `_delta_log/` **antes** de `source=.../` — ordem lexical, `_`
+   vem antes de `s` — então o log chega já apontando para arquivos que a cópia ainda não trouxe. Numa
+   tabela em escrita contínua, repetir o mirror não converge: o segundo trouxe 27 versões de log e
+   **um** arquivo de dados.
 
 ### 5.7 O que continua sem cobertura
 
