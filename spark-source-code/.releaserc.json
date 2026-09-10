@@ -1,0 +1,43 @@
+{
+  "branches": ["main"],
+  "tagFormat": "${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          { "type": "feat",     "release": "minor" },
+          { "type": "template", "release": "minor" },
+          { "type": "fix",      "release": "patch" },
+          { "type": "refactor", "release": "patch" },
+          { "breaking": true,   "release": "major" }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            { "type": "feat",     "section": "🚀 Novas funcionalidades", "hidden": false },
+            { "type": "template", "section": "🏗️ Mudanças de template",  "hidden": false },
+            { "type": "fix",      "section": "🐛 Correções",             "hidden": false },
+            { "type": "refactor", "section": "🔧 Refatorações",          "hidden": false },
+            { "type": "chore",    "section": "🔩 Manutenção",            "hidden": true  },
+            { "type": "docs",     "section": "📄 Documentação",          "hidden": true  },
+            { "type": "ci",       "section": "⚙️ CI/CD",                 "hidden": true  }
+          ]
+        }
+      }
+    ],
+    "@semantic-release/github",
+    [
+      "@semantic-release/exec",
+      {
+        "publishCmd": "echo version=${nextRelease.version} >> $GITHUB_OUTPUT"
+      }
+    ]
+  ]
+}

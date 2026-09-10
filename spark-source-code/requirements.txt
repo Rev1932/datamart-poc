@@ -1,0 +1,15 @@
+# Deps Python de runtime do job.
+#
+# NAO estao aqui, de proposito:
+#   - pyspark    -> a imagem base (apache/spark:3.5.8-java17-python3) ja traz o 3.5.8 em
+#                   /opt/spark/python; instalar via pip duplicaria ~300MB e arriscaria sombrear.
+#   - delta-spark-> instalado no Dockerfile com --no-deps (senao arrasta o pyspark acima), na
+#                   MESMA versao do ARG DELTA_VERSION, para nao divergir do jar embutido.
+#   - pyodbc     -> utils/sql_server_utils.py nao esta em nenhum caminho de runtime (so em
+#                   tests/unit, com stub em tests/conftest.py).
+importlib-metadata==8.5.0
+pyhocon==0.3.59
+requests==2.32.3
+minio==7.2.20
+trino==0.334.0
+psycopg2-binary==2.9.10

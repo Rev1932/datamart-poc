@@ -1,0 +1,54 @@
+# ConfigMap — valores NÃO-secretos do SUPER TENANT Lakatos (pipeline `silver_super_tenant`).
+# Espelha a parte não-secreta de resources/.env.example. Segredos ficam no Secret.
+#
+# O que difere de um tenant comum (k8s/configmap.yaml): NADA aqui aponta para os buckets de
+# ORIGEM. `MINIO_BASE_PATH` é o bucket de DESTINO; as origens chegam por `--source_tenants` nos
+# arguments do SparkApplication, montados pela DAG a partir do config no Mongo. Assim incluir um
+# novo cliente do Lakatos não exige alterar este ConfigMap nem redeploy.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-lakatos-config
+  namespace: dw-dados
+  labels:
+    app.kubernetes.io/name: spark-lakatos
+data:
+  # --- MinIO / S3 ---
+  # Bucket de DESTINO da Silver consolidada. A leitura das Silvers de origem é CROSS-BUCKET e
+  # depende da policy do usuário S3A — ver a seção "Pré-requisito de infra" no README deste
+  # diretório. Sem ela o job falha na inspeção das origens (é o desenho: falha explícita em vez
+  # de consolidar zero cliente em silêncio).
+  MINIO_BASE_PATH: "s3a://datawake-lakatos"
+  SPARK_S3_ENDPOINT: "https://minio.datawake.cloud:9000"
+
+  # --- Postgres (datamart gold) ---
+  POSTGRES_HOST: "dw-prd-postgres.dw-sql.svc.local-k8s.datawake.cloud"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DATABASE: "lakatos_dw"
+  POSTGRES_SCHEMA: "public"
+
+  # --- Trino ---
+  # ⚠️ TRINO_SCHEMA PRECISA SER EXCLUSIVO DESTE TENANT. Os catálogos por tenant foram
+  # consolidados no catálogo unificado `delta_lake` e o isolamento passou a ser por SCHEMA.
+  # Copiar `business` do ConfigMap do unipac faria `create_not_exists_schema` encontrar o schema
+  # existente, não recriar, e o `register_table` cadastrar as tabelas do Lakatos DENTRO do schema
+  # de outro tenant — falha silenciosa e confusa de desfazer.
+  TRINO_TYPE_AUTH: "basic"
+  TRINO_HOST: "trinodb2.datawake.cloud"
+  TRINO_PORT: "443"
+  TRINO_CATALOG: "delta_lake"
+  TRINO_SCHEMA: "business_lakatos"
+  # Pastas de camada: convenção GLOBAL, idêntica à dos demais tenants. É o que faz a Silver do
+  # super tenant ser indistinguível de qualquer outra para os .sql do gold e para o
+  # `delta_maintenance` (que resolve o path pela mesma env).
+  TRINO_SCHEMA_FOLDER: "business_datavault_data-bee"
+  TRINO_SCHEMA_FOLDER_SILVER: "business_datavault_data-bee"
+  TRINO_SCHEMA_FOLDER_GOLD: "service_data_data-bee"
+  TRINO_VERIFY_SSL: "false"
+
+  # --- ClickHouse (logs de auditoria) ---
+  CLICKHOUSE_URL: "https://api-logs.datawake.cloud"
+  CLICKHOUSE_SERVICE_NAME: "lakatos-pipeline"
+  # Caminho ABSOLUTO do certificado montado a partir do Secret `dtlk-clickhouse-ca` (objeto de
+  # plataforma, compartilhado entre tenants — ver o volume `clickhouse-ca` no sparkapplication).
+  CLICKHOUSE_VERIFY_SSL: "/etc/ssl/clickhouse/ca.crt"

@@ -41,5 +41,9 @@ WHERE
     to_timestamp(
         substring(dap.data_hora, 1, 23),
         'yyyy-MM-dd HH:mm:ss.SSS'
-    ) >= current_timestamp() - INTERVAL 10 DAYS
+    ) >= to_timestamp('JANELA_INICIO')
+    AND to_timestamp(
+        substring(dap.data_hora, 1, 23),
+        'yyyy-MM-dd HH:mm:ss.SSS'
+    ) < to_timestamp('JANELA_FIM')
     AND CAST(dap.real AS DOUBLE) <> 0

@@ -2,7 +2,6 @@ import warnings
 import requests
 from trino.dbapi import connect
 from trino.auth import BasicAuthentication
-from trino.auth import JWTAuthentication
 from urllib3.exceptions import InsecureRequestWarning
 import sys
 import logging
@@ -28,11 +27,9 @@ class TrinoConnection:
 
             self.host = self.config_manager.get("trino.host")
             self.port = self.config_manager.get("trino.port")
-
             self.catalog = self.config_manager.get("trino.catalog")
             self.schema = self.config_manager.get("trino.schema")
             self.schema_folder_gold = self.config_manager.get("trino.schema_folder_gold")
-
             self.schema_folder = self.config_manager.get("trino.schema_folder")
             self.verify = self.config_manager.get("trino.verify_ssl")
 
@@ -43,9 +40,6 @@ class TrinoConnection:
                 self.base_url = self.config_manager.get("trino.base_url")
                 self.client_id = self.config_manager.get("trino.client_id")
                 self.client_secret = self.config_manager.get("trino.client_secret")
-            elif self.type_auth == "jwt":
-                self.user = self.config_manager.get("trino.user")
-                self.jwt_token = self.config_manager.get("trino.jwt_token")
             else:
                 raise ValueError("Tipo de autenticação inválido. Use 'basic' ou 'oauth2'.")    
 
@@ -82,17 +76,6 @@ class TrinoConnection:
                 http_scheme=self.HTTPS_CODE,
                 http_headers={'Authorization': f'Bearer {token}'},
                 verify=self.verify,
-            )
-        elif type_auth == "jwt":
-            return connect(
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                auth=JWTAuthentication(self.jwt_token),
-                http_scheme=self.HTTPS_CODE,
-                catalog=self.catalog,
-                verify=self.verify,
-                schema=self.schema
             )
         else:
             raise ValueError("Tipo de autenticação inválido. Use 'basic' ou 'oauth2'.")
@@ -169,7 +152,7 @@ class TrinoConnection:
             schema = self.schema
             catalog = self.catalog
         else:
-            minio_path = f"{self.config_manager.get("minio.base_path")}/{self.schema_folder}/{table_name}"
+            minio_path = f"{self.config_manager.get('minio.base_path')}/{self.schema_folder}/{table_name}"
             schema = self.schema
             catalog = self.catalog
         try:

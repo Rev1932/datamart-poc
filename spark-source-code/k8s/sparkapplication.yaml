@@ -1,0 +1,151 @@
+# Template SparkApplication (Kubeflow Spark Operator, v1beta2) para uma execução do job.
+#
+# É um TEMPLATE: os campos entre <...> são preenchidos por execução (pela DAG do Airflow via
+# SparkKubernetesOperator, a partir do config Mongo — ou por `envsubst`/kustomize).
+#
+# Contrato da plataforma `dw-dados` (ver dtlk-k8s/dtlk-spark-operator/USER_SPARK_K8S.md):
+# namespace dw-dados, imagePullSecrets do Harbor, serviceAccount `spark` (criado pelo chart do
+# operator — não por este repositório) e placement obrigatório no nodepool-highperformance.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  # Nome único por execução (evita colisão de SparkApplications concorrentes).
+  name: sip-unipac-bronze-silver-refugo-00000008
+  namespace: dw-dados
+  labels:
+    app.kubernetes.io/name: spark-unipac
+    app.kubernetes.io/part-of: dtlk
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  # Nome da imagem = nome do repositório (é o que o publish.yml empurra para o Harbor).
+  # ConfigMap/Secret/labels seguem como spark-unipac: descrevem o job, não a imagem.
+  image: "hub.datawake.cloud/dw-dados/honeycomb:2.1.1"
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets:
+    - datawake-registry-secret
+  mainApplicationFile: "local:///opt/spark/app/src/main/main.py"
+  sparkVersion: "3.5.8"
+  restartPolicy:
+    type: Never          # job efêmero: falha → Failed (propaga o exit code do driver)
+  # Auto-limpeza do CR após o término (evita acúmulo quando orquestrado pelo Airflow).
+  timeToLiveSeconds: 86400
+
+  # nodeSelector no nível da app aplica a driver E executors (spark.kubernetes.node.selector).
+  # Jobs SEMPRE no nodepool-highperformance (ecs.r9i.xlarge, autoscaling 1→5): os pods ficam
+  # Pending por 2-5 min enquanto o autoscaler sobe um nó — não é falha.
+  nodeSelector:
+    alibabacloud.com/nodepool-id: npd3e04de863224bfa8a4f1f3b9dbf18b2
+
+  # Disco writable para spill/shuffle do Spark (item I11 de docs/pendencias-kubernetes.md).
+  #
+  # O prefixo `spark-local-dir-` NAO e decorativo: o LocalDirsFeatureStep do Spark reconhece
+  # volumes com esse prefixo e os usa como SPARK_LOCAL_DIRS. Com outro nome, o Spark cria um
+  # emptyDir PROPRIO para `spark.local.dir` no mesmo mountPath e a API rejeita o pod com
+  # `volumeMounts[N].mountPath: Invalid value: "/tmp/spark-local": must be unique`
+  # (submissao falha, nenhum pod criado). Por isso tambem nao ha `spark.local.dir` no sparkConf.
+  volumes:
+    - name: spark-local-dir-1
+      emptyDir:
+        sizeLimit: 10Gi
+
+    # Cadeia de CA do ClickHouse, entregue como ARQUIVO (nao via envFrom): o handler de
+    # auditoria passa CLICKHOUSE_VERIFY_SSL direto para requests(verify=...), que espera um
+    # caminho, nao o conteudo do certificado. O caminho resultante — mountPath dos
+    # volumeMounts + a chave `ca.crt` do Secret — e o valor de CLICKHOUSE_VERIFY_SSL no
+    # configmap.yaml. Contrato do Secret: k8s/clickhouse-ca-secret.example.yaml
+    - name: clickhouse-ca
+      secret:
+        # Secret PROPRIO e AGNOSTICO de tenant (sem prefixo spark-unipac): o certificado e
+        # compartilhado por N pipelines, enquanto as credenciais sao de cada um — assim a
+        # renovacao acontece num unico lugar e um teardown por label deste tenant nao leva
+        # junto o cert dos outros. Objeto de plataforma, como `spark-secrets`.
+        secretName: dtlk-clickhouse-ca
+        defaultMode: 0444          # leitura para o uid 185 (spark) da imagem
+        # Falha explicita: sem o Secret o pod fica em CreateContainerConfigError, em vez de
+        # subir e perder o log de auditoria em silencio (a excecao do envio e so um print).
+        # Para degradar suavemente em vez de bloquear, use `optional: true`.
+        optional: false
+
+  arguments:
+    - "--pipeline"
+    - "bronze_silver"
+    - "--tenant_name"
+    - "unipac"
+    - "--filial_name"
+    - "paulinia"
+    - "--table_name"
+    - "dw_refugo"
+    - "--primary_key"
+    - "id"
+
+  sparkConf:
+    # Credenciais S3A vêm do ambiente (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY do secret
+    # spark-secrets), nunca de conf — alinhado a src/main/utils/session.py:31-33.
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+
+  driver:
+    cores: 1
+    coreRequest: "500m"
+    coreLimit: "1"
+    memory: "2g"
+    serviceAccount: spark
+    labels:
+      app.kubernetes.io/name: spark-unipac
+      app.kubernetes.io/part-of: dtlk
+    env:
+      - name: PYTHONPATH
+        value: "/opt/spark/app/src/main"
+    envFrom:
+      - secretRef:
+          name: spark-secrets              # creds S3A da plataforma (usuário dw-app-spark-k8s)
+      - configMapRef:
+          name: spark-unipac-config
+      - secretRef:
+          name: spark-unipac-secret
+    volumeMounts:
+      - name: spark-local-dir-1
+        mountPath: /tmp/spark-local
+      - name: clickhouse-ca
+        mountPath: /etc/ssl/clickhouse
+        readOnly: true
+    tolerations:
+      - key: service-type
+        operator: Equal
+        value: high-memory
+        effect: NoSchedule
+
+  executor:
+    cores: 1
+    coreRequest: "1"
+    coreLimit: "2"
+    instances: 2
+    memory: "5g"
+    labels:
+      app.kubernetes.io/name: spark-unipac
+      app.kubernetes.io/part-of: dtlk
+    env:
+      - name: PYTHONPATH
+        value: "/opt/spark/app/src/main"
+    envFrom:
+      # Executores também leem Delta do S3 → precisam das mesmas credenciais e config.
+      - secretRef:
+          name: spark-secrets
+      - configMapRef:
+          name: spark-unipac-config
+      - secretRef:
+          name: spark-unipac-secret
+    volumeMounts:
+      - name: spark-local-dir-1
+        mountPath: /tmp/spark-local
+      # Mesmo cert do driver: initialize_logger() roda tambem nos executores
+      # (transformer.py, repository.py), entao eles abrem conexao propria com o ClickHouse.
+      - name: clickhouse-ca
+        mountPath: /etc/ssl/clickhouse
+        readOnly: true
+    tolerations:
+      - key: service-type
+        operator: Equal
+        value: high-memory
+        effect: NoSchedule

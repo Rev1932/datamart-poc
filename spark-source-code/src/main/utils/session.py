@@ -27,25 +27,18 @@ class SparkSessionFactory:
                 .appName(app_name)
             ) 
 
-            # Configuração S3 (MinIO) customizada
-            s3_config = config.get("spark.s3", {})            
+            # Configuração S3 (MinIO) customizada.
+            # Credenciais NAO entram aqui: vem de AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY pelo
+            # EnvironmentVariableCredentialsProvider. Setar access.key/secret.key explicitamente
+            # sobrescreve o provider declarado no spark-defaults.conf da plataforma.
+            s3_config = config.get("spark.s3", {})
             if s3_config:
                 if s3_config.get("endpoint"):
                     logger.info("Configuração Spark para S3/MinIO customizada endpoint.")
-                    builder = builder.config("spark.hadoop.fs.s3a.endpoint", s3_config.get("endpoint")) 
-                if s3_config.get("access_key"):
-                    logger.info("Configuração Spark para S3/MinIO customizada access_key.")
-                    builder = builder.config("spark.hadoop.fs.s3a.access.key", s3_config.get("access_key")) 
-                if s3_config.get("secret_key"):
-                    logger.info("Configuração Spark para S3/MinIO customizada secret_key.")
-                    builder = builder.config("spark.hadoop.fs.s3a.secret.key", s3_config.get("secret_key")) 
-                
+                    builder = builder.config("spark.hadoop.fs.s3a.endpoint", s3_config.get("endpoint"))
 
             # Configuração Spark customizada
             for key, value in config.get("spark.conf", {}).items():
-                # pyhocon mantém as aspas em chaves com ponto (ex.: "spark.sql.extensions");
-                # remove para não registrar uma chave Spark inválida.
-                key = key.strip('"')
                 logger.info(f"Configuração Spark customizada: {key}={value}")
                 builder = builder.config(key, value)
 
