@@ -17,6 +17,7 @@ ClickHouse (Altinity operator), Spark Operator (kubeflow).
 9. [`UNRESOLVED_COLUMN dap.andon_peso_id` + chave-pk inexistente](#9-unresolved_column-dapandon_peso_id--chave-pk-inexistente)
 10. [Pipeline `datamart` trava no `extract` / apiserver TLS timeout](#10-pipeline-datamart-trava-no-extract--apiserver-tls-timeout--em-aberto)
 11. [`save` no ClickHouse falha com `Magic is not correct` (LZ4) — incompat de versão](#11-save-no-clickhouse-falha-com-magic-is-not-correct-lz4--incompat-de-versao)
+12. [`minikube image load` não substitui tag existente](#12-minikube-image-load-nao-substitui-tag-existente)
 
 ---
 
@@ -361,6 +362,43 @@ spark.sql("SHOW TABLES IN clickhouse.datamart").show()  # dispara ClickHouseCata
 **Inspecionar o framing HTTP:** o pod do ClickHouse **não** tem `curl`, mas tem
 `wget`/`od`/`xxd`. Autentique por header: `wget -qO- --header='X-ClickHouse-User: datamart'
 --header='X-ClickHouse-Key: <pwd>' 'http://localhost:8123/?compress=1&query=SELECT%201%20FORMAT%20JSONEachRow' | od -An -tx1`.
+
+---
+
+## 12. `minikube image load` não substitui tag existente
+
+> Status: **resolvido** (2026-09-10).
+
+**Sintoma:** o build local muda, `minikube image load honeycomb:poc` sai com `exit 0` sem
+mensagem nenhuma, e o nó continua com a imagem antiga:
+
+```
+$ docker images --no-trunc -q honeycomb:poc
+sha256:b8f0c34bbc97...
+$ minikube ssh -- "docker images | grep honeycomb"
+honeycomb   poc   3df83ff9c4d3   45 hours ago
+```
+
+O pod sobe com `imagePullPolicy: Never`, encontra a tag, e roda **o código velho**. Nada no
+`kubectl describe` denuncia isso: a tag existe e o pod está `Running`.
+
+**Causa raiz:** o `image load` do minikube 1.36.0 trata a tag como já satisfeita quando ela
+existe no nó, e `--overwrite=true` — que é o default — não muda o comportamento. Reproduzido
+com a flag explícita.
+
+**Correção:** carregar pelo daemon do nó, que renomeia a imagem antiga e assume a tag:
+
+```bash
+docker save honeycomb:poc | docker exec -i minikube docker load
+# The image honeycomb:poc already exists, renaming the old one with ID sha256:3df83f...
+# Loaded image: honeycomb:poc
+```
+
+Aplicado em `scripts/bootstrap.sh`. O nome `minikube` é o do container do nó no driver docker.
+
+> **Este é o modo de falha mais caro do repositório.** Uma imagem que não atualiza produz um
+> job que roda verde com o código errado — e a evidência do benchmark sai inválida sem que
+> nada falhe. Conferir o ID da imagem dentro do nó depois de todo build.
 
 ---
 

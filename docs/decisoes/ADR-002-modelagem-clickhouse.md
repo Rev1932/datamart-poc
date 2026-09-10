@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | Status | Aceita |
-| Data | 2026-09-04 |
+| Data | 2026-09-04, revista em 2026-09-09 |
 | Task | [E2](../epicos/E2-execucao.md) T2.3 |
 
 ## Contexto
@@ -32,7 +32,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 ```
 
 `LowCardinality(String)` em `filial, banco, unidade_producao_nome, atributo_nome_pai, atributo_tipo,
-unidade_medida, nome_limite_*`. `Decimal(18,4)` em `valor` e `valor_limite_*`. `Nullable` removido de
+unidade_medida, nome_limite_*`. `Decimal(9,3)` em `valor` e `valor_limite_*`. `Nullable` removido de
 `timestamp, filial, banco, unidade_producao_id`.
 
 ## Justificativa
@@ -66,8 +66,26 @@ Granularidade diária geraria partes demais para o volume da POC.
 | Escolha | Efeito |
 |---|---|
 | `LowCardinality(String)` | Dicionariza colunas com poucos valores distintos: corta disco e acelera `GROUP BY` |
-| `Decimal(18,4)` em vez de `DOUBLE` | A query hoje faz `CAST(... AS DOUBLE)`. O `get_type_sql` do Postgres mapeia isso para `DOUBLE PRECISION`; sem alinhar os dois braços, `sum(valor)` diverge no portão de corretude |
+| `Decimal(9,3)` em vez de `DOUBLE` | A query hoje faz `CAST(... AS DOUBLE)`. O `get_type_sql` do Postgres mapeia isso para `DOUBLE PRECISION`; sem alinhar os dois braços, `sum(valor)` diverge no portão de corretude |
+| Precisão 9, não 18 | A origem é `Decimal(5,1)`, medida no Parquet real. Precisão até 9 cabe em `Decimal32` (4 bytes); de 10 a 18 vira `Decimal64` (8) |
 | `Nullable` removido | Cada coluna `Nullable` carrega uma coluna extra de máscara. Além disso, `PARTITION BY` e chave de ordenação exigem não-nulo |
+
+## Revisão de 2026-09-09 — precisão
+
+A escolha original de `Decimal(18,4)` foi feita sem o dado. Com a silver ingerida, `DESCRIBE` sobre o
+Parquet real de `dw_andon_peso` mostra:
+
+```
+real              Nullable(Decimal(5, 1))
+limite_inferior   Nullable(Decimal(5, 1))
+limite_superior   Nullable(Decimal(5, 1))
+```
+
+Quatro dígitos inteiros e um decimal. `Decimal(9,3)` cobre isso com folga de duas casas e mantém a coluna
+em `Decimal32`; `18,4` obrigava `Decimal64` sem nenhum valor a mais representável.
+
+A decisão de **usar `Decimal` em vez de `DOUBLE` não muda** — ela existe para alinhar os dois braços, e é
+o que o portão de corretude cobra. O que muda é só a largura.
 
 ## Consequências
 

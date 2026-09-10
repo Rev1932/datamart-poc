@@ -19,7 +19,10 @@ que interrompem o trabalho se o dado não estiver íntegro.
 
 ## Premissas
 
-1. Os dois braços estão carregados a partir do mesmo Delta silver.
+1. Os dois braços estão carregados pela **mesma query sobre a silver, com a mesma janela explícita**,
+   no mesmo DagRun. Ver [E2 v3.0](E2-execucao.md) — a gold não é materializada.
+   Corolário: a silver esteve parada durante a carga. Se não esteve, T3.1 pode falhar por dado, não por
+   motor.
 2. O dado é uma amostra real — as conclusões são de **razão entre motores**, não de latência absoluta.
 3. Existem dois tenants no ClickHouse.
 
@@ -43,17 +46,23 @@ Projeção de custo em produção, dimensionamento de cluster produtivo, plano d
 
 ## T3.0 — Portão de janela
 
-Roda logo após [E2](E2-execucao.md) T2.5, **antes** de fechar a DDL definitiva.
+Roda logo após [E2](E2-execucao.md) T2.5 — a silver precisa existir —, **antes** de fechar a DDL
+definitiva do ClickHouse em T2.3.
 
 ### O que medir
 
-Quantos meses distintos uma execução típica do pipeline toca. Uma query só, na silver:
+Quantos meses distintos uma execução típica do pipeline toca. Sem gold materializada, a medição é sobre a
+**silver**, na coluna que origina o `timestamp` da fato (`dap.data_hora` de `dw_andon_peso`):
 
 ```sql
-SELECT count(DISTINCT date_format(ts, 'yyyyMM')) AS meses_tocados
+SELECT count(DISTINCT date_format(
+         to_timestamp(substring(data_hora, 1, 23), 'yyyy-MM-dd HH:mm:ss.SSS'), 'yyyyMM')) AS meses_tocados
 FROM delta.`s3a://datamart/business_datavault_data-bee/dw_andon_peso`
-WHERE ts >= <janela típica de execução>
+WHERE to_timestamp(substring(data_hora, 1, 23), 'yyyy-MM-dd HH:mm:ss.SSS') >= 'JANELA_INICIO'
 ```
+
+O `INNER JOIN` da query só reduz linhas, nunca acrescenta mês — então a contagem aqui é o **limite
+superior** dos meses tocados, que é exatamente o número de que a decisão precisa.
 
 ### A decisão
 
@@ -101,6 +110,7 @@ bash benchmark/compare-counts.sh
 | Sintoma | Causa provável |
 |---|---|
 | `delta` constante e negativo no CH | Limpeza `.na.drop` aplicada em só um braço ([E2](E2-execucao.md) T2.4) |
+| `delta` pequeno e sem padrão | Janela não propagada, ou silver alterada entre as duas cargas — conferir a query resolvida no log dos dois jobs |
 | `delta` só em um mês | `REPLACE PARTITION` com incremento parcial — o defeito D1 não foi corrigido |
 | `sum(valor)` diverge mas `count` bate | `DOUBLE` em um braço e `Decimal` no outro |
 | `delta` positivo no CH | Recarga sem troca de partição: linhas duplicadas |
