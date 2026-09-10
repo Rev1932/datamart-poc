@@ -25,42 +25,59 @@
 ## 1. Desenho alvo
 
 ```
-Usuário carrega Parquet real  →  s3a://datamart/data-bee_replication/data-bee_<filial>/<tabela>/
+Usuário ingere a silver em Delta  →  business_datavault_data-bee/<tabela>
                                           │
-   MongoDB Data_Catalog.k8s_<tenant>  ────┤  control plane: filiais, tables, schedule, versão
+   MongoDB Data_Catalog.k8s_<tenant>  ────┤  control plane: tables, schedule, versão
                                           ▼
-   Airflow (LocalExecutor)  →  DAG k8s_<tenant>_bronze_silver
-                                  SparkKubernetesOperator, 1 pod por filial
-                                          ▼
-                          Delta silver: business_datavault_data-bee/<tabela>
-                                          │
-                            Dataset("honeycomb://<tenant>/silver")
-                                          │
+   Airflow (LocalExecutor)  →  DAG k8s_<tenant>_datamart
+                                  um DagRun, uma janela
                     ┌─────────────────────┴─────────────────────┐
                     ▼                                           ▼
-      DAG ..._gold_datamart_pg                    DAG ..._gold_datamart_ch
-      --pipeline gold_datamart                    --pipeline gold_datamart_clickhouse
+      task carga_postgres                          task carga_clickhouse
+      --pipeline datamart_pg                       --pipeline datamart_ch
+                    │                                           │
+       query fact_200_cep.sql sobre a silver, JANELA_INICIO / JANELA_FIM
                     ▼                                           ▼
         Postgres (staging + ON CONFLICT)          ClickHouse dm_<tenant> (REPLACE PARTITION)
                     └─────────────────  benchmark/  ────────────┘
                             mesmas queries, mesmo hardware
 ```
 
-O ponto de desenho que mais vale: **as duas DAGs gold disparam do mesmo Dataset**. O mesmo Delta silver
-alimenta os dois braços automaticamente, sem intervenção manual. O rigor experimental — mesma origem,
-mesma máquina, mesmo instante — sai de graça do padrão de orquestração que já é produtivo.
+O ponto de desenho que mais vale: **as duas cargas vivem no mesmo DagRun**. É de lá que saem
+`JANELA_INICIO` e `JANELA_FIM`, então os dois braços recortam o mesmo intervalo por construção da DAG, não
+por dois agendamentos concordarem.
+
+> Dois passos saíram do escopo em [E2 v3.0](epicos/E2-execucao.md): bronze → silver e a materialização da
+> gold no Delta — esta última desejável pelos recursos do Delta na camada gold, mas feature de outro
+> momento. A silver entra pronta, em Delta, ingerida pelo usuário de fora do repositório.
 
 ### Simetria experimental
 
-`read()` e `transform()` são **compartilhados** entre os dois braços por herança. **Só o `write()` difere.**
-É o que sustenta a afirmação mais forte da apresentação:
+A afirmação que a apresentação precisa sustentar:
 
 > *"Mesma leitura, mesma transformação, mesma máquina, mesmo dado. A única coisa diferente é para onde
 > foi escrito."*
 
-Quebrar essa simetria — limpar `NULL` em um braço e não no outro, converter tipo em um e não no outro —
+Sem a gold materializada, cada braço executa a junção de quatro tabelas sobre a silver, em instantes
+diferentes. A simetria não é dada de graça — vem de três garantias, e convém saber o alcance de cada uma:
+
+| Garantia | Cobre | Não cobre |
+|---|---|---|
+| Herança de `PipelineGold` | `read()` e `transform()` são literalmente o mesmo código nos dois braços | *Quando* cada um roda |
+| Janela explícita (E2/T2.2) | Os dois recortam o mesmo intervalo, mesmo em instantes diferentes | A silver mudar no meio |
+| DAG única, tasks em sequência | Mesma janela, sem concorrência entre os drivers Spark | Carga manual da silver durante o DagRun |
+
+O que sobra descoberto é a última linha: **a silver precisa estar parada durante a DAG**. É premissa
+operacional, não invariante de código, e está registrada como risco em E2/T2.6.
+
+Quebrar a simetria — limpar `NULL` em um braço e não no outro, converter tipo em um e não no outro —
 faz as contagens divergirem, e a divergência **não é do motor**: é bug nosso. O portão de corretude (T3.1)
-existe exatamente para pegar isso antes de qualquer número de performance ser publicado.
+existe exatamente para pegar isso antes de qualquer número de performance ser publicado. Na v3.0 ele ganha
+um assert a mais: as contagens dos dois destinos na mesma janela precisam bater.
+
+> **`load_dts` diverge por construção.** `RepositoryGoldDataVaults.read()` a preenche com
+> `current_timestamp()`, avaliado em cada braço. Comparação linha a linha entre os destinos precisa
+> excluir essa coluna — é o falso positivo mais provável do portão.
 
 ---
 
@@ -126,7 +143,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 | Coluna | Tipo | Motivo |
 |---|---|---|
 | `filial`, `banco`, `unidade_producao_nome`, `atributo_nome_pai`, `atributo_tipo`, `unidade_medida`, `nome_limite_*` | `LowCardinality(String)` | Poucos valores distintos; dicionarização corta disco e acelera `GROUP BY` |
-| `valor`, `valor_limite_superior`, `valor_limite_inferior` | `Decimal(18,4)` | A query hoje faz `CAST(... AS DOUBLE)`. Trocar para `Decimal` **nos dois braços**, senão o Postgres mapeia para `DOUBLE PRECISION` e a comparação numérica desalinha |
+| `valor`, `valor_limite_superior`, `valor_limite_inferior` | `Decimal(9,3)` | A query hoje faz `CAST(... AS DOUBLE)`. Trocar para `Decimal` **nos dois braços**, senão o Postgres mapeia para `DOUBLE PRECISION` e a comparação numérica desalinha. Precisão 9 porque a origem é `Decimal(5,1)`, medida no Parquet real — cabe em `Decimal32` |
 | `timestamp`, `filial`, `banco`, `unidade_producao_id` | **não** `Nullable` | Exigência do `PARTITION BY` e da chave de ordenação |
 | Demais colunas de negócio | `Nullable` só se o dado exigir | Cada coluna `Nullable` carrega uma coluna extra de máscara |
 
@@ -287,11 +304,11 @@ estado não-terminal. Sem isso o p95 mede o scheduler do Airflow, não o banco. 
 
 | Risco | Sinal observável | Mitigação |
 |---|---|---|
-| Dado real fora do layout esperado | `bronze_silver` loga "nenhum arquivo" e **conclui com SUCESSO** | `load-bronze.sh --validate` falha antes, nomeando o caminho |
-| Duas filiais na mesma tabela ao mesmo tempo | Contagem na silver menor que a soma das bronzes, **sem erro** | `max_active_tis_per_dag=1`, como em produção |
+| Dado real fora do layout esperado | A query falha com `Path does not exist`, ou lê uma silver vazia e **conclui com SUCESSO** | Contrato de entrada em [E2/T2.5](epicos/E2-execucao.md); o assert de contagem de T2.6 acusa a silver vazia |
+| Silver alterada durante o DagRun | Contagens divergentes entre os braços, irreprodutível | Carregar a silver com a DAG pausada; o assert de contagem do E3 acusa |
 | Connector ClickHouse-Spark incompatível (incidente #11, LZ4) | `IllegalArgumentException: Magic is not correct` no driver | Jars pinados; fallback `option.compress=false`; fallback final por Parquet + `s3()` |
 | Ruído de fundo contamina o p95 | Desvio > 30% entre rodadas idênticas | `profile.sh quiesce` obrigatório |
-| Contagens divergem entre braços | `delta ≠ 0` no portão T3.1 | Causa mais provável: limpeza aplicada em só um braço |
+| Contagens divergem entre braços | `delta ≠ 0` no portão T3.1 | Causas prováveis, nesta ordem: janela não propagada, limpeza aplicada em só um braço, silver em movimento |
 
 Riscos específicos de cada task estão no épico correspondente.
 

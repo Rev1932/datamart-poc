@@ -1,15 +1,20 @@
-# Imagem da POC: a imagem de produção do honeycomb mais os jars do connector ClickHouse.
+# Imagem da POC: a imagem do honeycomb 3.3.0 construída localmente, mais os jars do
+# connector ClickHouse.
 #
-# NÃO reconstrói o honeycomb. A imagem publicada já traz Spark 3.5.8 (Scala 2.12, Java 17),
-# Delta 3.3.2, hadoop-aws 3.3.4, o app em /opt/spark/app e as dependências Python.
-# O único delta da POC é o connector ClickHouse, que a imagem de produção ainda não carrega.
+# NÃO reconstrói o app. A base honeycomb:3.3.0-local sai de spark-source-code/Dockerfile,
+# que é o da própria release 3.3.0: Spark 3.5.8 (Scala 2.12, Java 17), Delta 3.3.2,
+# hadoop-aws 3.3.4, JDBC do Postgres e o app em /opt/spark/app.
+# O único delta da POC é o connector ClickHouse, que a base ainda não carrega.
 #
-#   docker build -f images/spark/Dockerfile -t honeycomb:poc images/spark/
+#   docker build -f spark-source-code/Dockerfile -t honeycomb:3.3.0-local spark-source-code/
+#   docker build -f images/spark/Dockerfile      -t honeycomb:poc         images/spark/
 #   minikube image load honeycomb:poc
 #
 # A tag `poc` casa com o `honeycomb_version` semeado no Mongo (airflow/mongo-seed/).
 
-FROM hub.datawake.cloud/dw-dados/honeycomb:latest
+# Construída localmente, não puxada: o registry publica só 3.9.0..3.9.10 e `latest` —
+# a 3.3.0 não está lá, e `latest` traz a query em UNION ALL que o E2 rejeitou.
+FROM honeycomb:3.3.0-local
 
 USER root
 

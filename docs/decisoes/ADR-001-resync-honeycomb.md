@@ -64,3 +64,32 @@ torna a POC "idêntica à produção".
   aceitável upstream.
 - Risco assumido: o re-sync pode quebrar algo que só o fork tinha. Mitigação: rodar `pytest -q`
   imediatamente após o rsync, antes de qualquer edição.
+
+---
+
+## Revisão de 2026-09-09 — a base é a tag `3.3.0`, não `main`
+
+O re-sync foi executado contra **`3.3.0` (`a5f2fa4`, 2026-08-05)**, extraída com
+`git archive`, sem alterar o repositório do honeycomb.
+
+`main` foi descartado por medição, não por preferência. Em `b0d7472` a
+`resources/queries/fact_200_cep.sql` foi reescrita como `UNION ALL` de dois ramos:
+
+| | `3.3.0` | `main` (`b0d7472`) |
+|---|---|---|
+| Tabelas silver | 4 | 9 |
+| Dependência de gold | nenhuma | `S3_PATH_GOLD/dim_limites` |
+| Filtro temporal | `INTERVAL 10 DAYS` (o defeito **D1**) | **nenhum** — lê a silver inteira |
+| Formato de `data_hora` | `.SSS`, 3 casas | `.SSSSSS`, 6 casas |
+| Tipo de `valor` | `CAST(... AS DOUBLE)` | `decimal(18,4)` |
+
+O dado real ingerido tem 4 tabelas e `data_hora` com 3 casas decimais. Contra `main`, a POC não roda:
+faltam 5 tabelas silver e uma gold que ninguém materializou.
+
+**Consequência para o PR upstream:** o patch nasce sobre `3.3.0` e vai precisar de rebase. As duas peças
+novas — a janela em `queryutils` e o braço ClickHouse — não tocam nada que `main` reescreveu, exceto o
+predicado de `fact_200_cep.sql`, que em `main` não existe mais. O rebase é de conflito conhecido, não de
+surpresa.
+
+Chaves da factory em `3.3.0`: `gold`, `gold_datamart`, `bronze_silver`, `silver_super_tenant`,
+`delta_maintenance`. `datamart_ch` foi acrescentada por T2.3.

@@ -1,0 +1,14 @@
+# Ignorar pastas __pycache__ em qualquer nível
+**/__pycache__/
+**/*.pkl
+**/*.log
+**/*application-local-remoto.conf
+
+# Spark local
+spark/
+**/logs/
+**/events/
+
+**application-*.conf
+**.venv/
+**venv/

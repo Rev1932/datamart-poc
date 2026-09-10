@@ -370,6 +370,11 @@ As quatro asserções negativas passam:
    original: são **duas** coleções, não uma; e `source_tenants` não entra — é exclusivo da DAG de
    super-tenant (`k8s_lakatos_silver_super_tenant`), que a POC não replica.
 
+   > A tabela acima é o que T1.6 **entregou**. Os consumidores mudaram depois, em
+   > [E2 v3.0](E2-execucao.md): sem o passo bronze → silver, `k8s_<tenant>` deixa de alimentar DAG
+   > nenhuma e passa a ser a lista de tabelas silver validada pela carga; `k8s_<tenant>_gold` alimenta a
+   > DAG única `k8s_<tenant>_datamart`. O documento semeado não mudou.
+
 3. Probe de readiness por `tcpSocket`, não `mongosh --eval`: o mongosh é Node.js e não sobe dentro do
    `timeoutSeconds` default de 1s. Ver [D9](../TESTES.md#d9--probe-lento-derruba-o-dns-do-service-headless).
 

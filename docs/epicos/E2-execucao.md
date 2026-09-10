@@ -2,56 +2,180 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.0 |
-| Data | 2026-09-04 |
-| Status | Não iniciado |
-| Objetivo | Um trigger no Airflow carrega os dois braços a partir do mesmo Delta silver |
-| Depende de | [E1](E1-infraestrutura.md) completo |
+| Versão | 3.0 |
+| Data | 2026-09-09 |
+| Status | Replanejado — não iniciado |
+| Objetivo | Carregar os dois datamarts **direto da silver**, pela mesma query, na mesma janela |
+| Depende de | [E1](E1-infraestrutura.md) completo ✅ |
 | Bloqueia | E3 inteiro |
 | Progresso | [../TODO.md](../TODO.md) |
 
 ---
 
+## O que mudou da versão 2.0
+
+A 2.0 materializava a gold no Delta e servia os dois braços a partir dela. A 3.0 corta esse passo: a
+cadeia vai da **silver direto para os datamarts**. Decisão do usuário — os recursos do Delta na camada
+gold são desejáveis, mas são feature de outro momento, não da POC.
+
+| | Versão 2.0 | Versão 3.0 |
+|---|---|---|
+| Passos Spark | 3 (`gold`, `datamart_pg`, `datamart_ch`) | **2** (`datamart_pg`, `datamart_ch`) |
+| A gold | materializada no Delta, uma vez | **não materializada** — é a query, executada por cada braço |
+| O que os braços leem | o Delta gold, os mesmos bytes | a silver, pela **mesma query com a mesma janela** |
+| Encadeamento | Dataset `honeycomb://<tenant>/gold` | uma DAG, duas tasks, **o mesmo DagRun** |
+| Tasks | 7 | **6** — T2.7 sai |
+| Código novo | guarda do Trino + config da gold | **nenhum** nessa frente |
+
+### O que isto simplifica de verdade
+
+O fork já está desenhado assim. Não é adaptação — é usar o que existe:
+
+```python
+class PipelineGoldClickHouse(PipelineGold):
+    """Datamart: reusa exatamente a leitura da gold (query sobre a silver + hk_business_id
+    + load_dts) e, no lugar de gravar Delta no MinIO, grava no ClickHouse.
+    Só o `save` muda em relação à PipelineGold."""
+```
+
+Três consequências concretas:
+
+1. **A pendência do Trino desaparece.** `TrinoConnection` é instanciado no `PipelineGoldWrapper`
+   (chave `gold`) e no `PipelineBronzeToSilverWrapper` — nenhum dos dois entra no escopo. O
+   `PipelineDatamartWrapper` já roda **sem passo Trino**. Não há nada a guardar por configuração.
+2. **`chave_pk` e `colunas_zorder` deixam de ser pré-requisito de gravação.** `colunas_zorder` só serve
+   ao `OPTIMIZE` do Delta, que sai junto. `chave_pk` continua sendo lida — ver o modo de falha abaixo.
+3. **A simetria dos dois braços já é código, não plano.** `read()` e `transform()` vêm de `PipelineGold`
+   por herança; só o `save()` difere. A refatoração de T2.4 vira conferência, não construção.
+
+### O que isto custa — e como o custo é pago
+
+A junção de quatro tabelas roda **duas vezes**, uma por braço, em instantes diferentes. Se nada mais
+mudasse, os dois braços poderiam ler conjuntos de linhas diferentes, e o portão de corretude do
+[E3](E3-validacao.md) acusaria uma diferença que não é do motor.
+
+Duas coisas fecham essa brecha, e **as duas são obrigatórias**:
+
+| Origem da divergência | Fechamento |
+|---|---|
+| `current_timestamp() - INTERVAL 10 DAYS` no `WHERE` da query — o corte anda entre as duas execuções | [T2.2](#t22--janela-de-carga): a janela vira parâmetro, passada pelo chamador |
+| A silver mudar entre a execução de um braço e a do outro | [T2.6](#t26--dag): **uma** DAG, duas tasks, o mesmo `data_interval`; carga da silver não concorre com a DAG |
+
+> **É a mudança de risco desta versão.** Na 2.0, a comparabilidade dos braços era garantida pela
+> estrutura — mesmos bytes, não havia como divergir. Na 3.0 ela é garantida por **disciplina de janela**:
+> a query é determinística *se e somente se* os limites vierem de fora e a silver estiver parada.
+> T2.2 deixa de ser correção de defeito e passa a ser pré-requisito do experimento.
+
+---
+
 ## Objetivo
 
-Transformar o fork defasado em código idêntico ao produtivo, acrescentar o braço ClickHouse, e orquestrar
-os dois braços pelo mesmo Dataset do Airflow.
+Carregar Postgres e ClickHouse a partir da silver, com a mesma query e a mesma janela, para que a
+comparação do [E3](E3-validacao.md) meça o motor e não o recorte do dado.
+
+## Desenho da cadeia
+
+```
+Usuário ingere a silver em Delta  ─→  business_datavault_data-bee/<tabela>
+                                          │
+   MongoDB Data_Catalog.k8s_<tenant>  ────┤  control plane: tables, schedule, versão
+                                          ▼
+                       Airflow  →  DAG k8s_<tenant>_datamart
+                                   um DagRun, uma janela
+                    ┌─────────────────────┴─────────────────────┐
+                    ▼                                           ▼
+      task carga_postgres                          task carga_clickhouse
+      --pipeline datamart_pg                       --pipeline datamart_ch
+                    │                                           │
+       query fact_200_cep.sql sobre a silver, JANELA_INICIO / JANELA_FIM
+                    ▼                                           ▼
+        Postgres (staging + ON CONFLICT)          ClickHouse dm_<tenant> (REPLACE PARTITION)
+                    └─────────────────  benchmark/  ────────────┘
+                            mesmas queries, mesmo hardware
+```
 
 ## Premissas
 
-1. O usuário carrega os Parquet reais; a POC não gera dado sintético.
+1. O usuário ingere as tabelas silver **já em Delta**, de fora do repositório. A POC não converte, não
+   copia e não gera dado sintético.
 2. O delta de código sobre o honeycomb é desenhado para virar PR upstream.
-3. `read()` e `transform()` são compartilhados entre os braços; só `write()` difere.
+3. **A silver não muda durante a execução da DAG.** É premissa, não garantia do código — ver
+   [riscos de T2.6](#riscos-4).
+4. Os dois braços recebem os **mesmos** `JANELA_INICIO` e `JANELA_FIM`, do mesmo DagRun.
 
 ## Fora de escopo
 
-Alterar o honeycomb produtivo. O que sai daqui é um patch candidato, não um deploy.
+| Fora | Por quê |
+|---|---|
+| `bronze_silver` via Spark | Não produz evidência para a tese. O usuário ingere a silver pronta, em Delta |
+| **Gold materializada no Delta** | Decisão do usuário: os recursos do Delta na gold são feature futura, não da POC |
+| Passo Trino (`create_table`) | Nenhum pipeline do escopo o invoca — ver [o que isto simplifica](#o-que-isto-simplifica-de-verdade) |
+| `oee_cleaner` | Não participa da cadeia do datamart |
+| Alterar o honeycomb produtivo | O que sai daqui é patch candidato, não deploy |
+
+---
+
+## Contrato da silver — fechado
+
+Resolvido em 2026-09-09. **Decisão do usuário: a seed se adequa ao prefixo.** A query
+`resources/queries/fact_200_cep.sql` é a fonte da verdade; `airflow/mongo-seed/k8s_<tenant>.json` foi
+corrigido para bater com ela.
+
+```
+delta.`MINIO_BASE_PATH/S3_PATH_SILVER/dw_andon_peso`        dap
+delta.`MINIO_BASE_PATH/S3_PATH_SILVER/dw_ordem_producao`    dop
+delta.`MINIO_BASE_PATH/S3_PATH_SILVER/dw_unidade_producao`  dup
+delta.`MINIO_BASE_PATH/S3_PATH_SILVER/dw_material`          dma
+```
+
+Ao aplicar o prefixo apareceram mais duas divergências, ambas lidas dos predicados de join:
+
+| Campo | Antes | Agora | Consequência de não corrigir |
+|---|---|---|---|
+| `tables[].name` | 3 tabelas sem prefixo | 4 tabelas com `dw_` | `Path does not exist` na primeira execução |
+| `chave_pk` da silver | `andon_peso_id`, … | `id`, `unidade_origem`, `dataset_origem` | `--validate` de T2.5 conferindo coluna inexistente |
+| `chave_pk` da gold | `["andon_peso_id"]` | `["filial", "banco", "andon_peso_id"]` | **Perda silenciosa de linha** — ver abaixo |
+
+> **A chave curta da gold perdia dado.** `andon_peso_id` é `dap.id`, único dentro de uma origem; a fato
+> agrega várias (`filiais[]` declara duas por tenant). Duas filiais com o mesmo `id` produzem o mesmo
+> `hk_business_id`, o `ReplacingMergeTree` do ClickHouse colapsa o par e **uma das linhas some sem erro**.
+> `filial` e `banco` estão na projeção da query exatamente por isso — a chave só não os usava.
+>
+> Este era o modo de falha dominante do épico. Continua valendo o assert
+> `count(distinct hk_business_id) == count(*)` no aceite de T2.3: ele é o que provaria a correção, ou
+> apanharia a próxima variante do mesmo erro com o dado real.
+
+O `--validate` de T2.5 é a rede: um `name` que não exista no MinIO falha ali, nomeado, antes de qualquer
+job Spark.
 
 ---
 
 ## Tasks
 
-| Task | Entrega | Bloqueia |
-|---|---|---|
-| [T2.1](#t21--re-sync-com-honeycombmain) | Re-sync de `spark-source-code/` com `honeycomb@main` | T2.2, T2.3, T2.4 |
-| [T2.2](#t22--janela-de-carga) | Query parametrizada por janela — corrige **D1** | T2.3 |
-| [T2.3](#t23--repositório-clickhouse) | `RepositoryGoldDatamartClickhouse` + troca de partição | T3.1 |
-| [T2.4](#t24--braço-postgres-e-simetria-experimental) | Braço Postgres com `read`/`transform` compartilhados | T3.1 |
-| [T2.5](#t25--carga-bronze) | Carga bronze com validação de layout | T3.0 |
-| [T2.6](#t26--dags) | Três DAGs encadeadas por Dataset | — |
+Na ordem de execução. A numeração é de criação, não de ordem. **T2.7 não existe na 3.0.**
 
-T2.3 e T2.4 são paralelizáveis depois de T2.1.
+| Ordem | Task | Entrega | Bloqueia |
+|---|---|---|---|
+| 1 | [T2.1](#t21--re-sync-com-honeycombmain) | Re-sync de `spark-source-code/` com `honeycomb@main` | todas |
+| 2 | [T2.5](#t25--contrato-de-entrada-da-silver) | Contrato de entrada da silver — documentação | T2.3, T2.4 |
+| 3 | [T2.2](#t22--janela-de-carga) | Query parametrizada por janela — corrige **D1** | T2.3, T2.4 |
+| 4 | [T2.3](#t23--braço-clickhouse) | `RepositoryDatamartClickhouse` + troca de partição | T3.1 |
+| 5 | [T2.4](#t24--braço-postgres-e-simetria-experimental) | Braço Postgres pela mesma leitura | T3.1 |
+| 6 | [T2.6](#t26--dag) | DAG única com as duas cargas | — |
+
+T2.3 e T2.4 são paralelizáveis depois de T2.2.
 
 ---
 
-## T2.1 — Re-sync com `honeycomb@main`
+## T2.1 — Re-sync com honeycomb `3.3.0`
 
-Decisão e argumento completo em [ADR-001](../decisoes/ADR-001-resync-honeycomb.md).
+Decisão e argumento completo em [ADR-001](../decisoes/ADR-001-resync-honeycomb.md). **Inalterado desde a 1.0.**
 
 ### Ações
 
-1. `rsync` de `honeycomb@main` sobre `spark-source-code/`, excluindo `.git`, `.venv`, `__pycache__`,
-   `.pytest_cache`.
+1. `rsync` da tag **`3.3.0`** sobre `spark-source-code/`, excluindo `.git`, `.venv`, `__pycache__`,
+   `.pytest_cache`. Extrair com `git archive`, que não altera o repositório de origem.
+   **Não usar `main`**: ver [ADR-001, revisão de 2026-09-09](../decisoes/ADR-001-resync-honeycomb.md).
 2. Preservar `src/main/utils/clickhouse_connection.py` do fork — 30 linhas, sem dependência do código
    velho, e é o único ativo que o fork tem.
 3. Acrescentar ao `_ENV_SCHEMA` de `src/main/utils/config_manager.py`:
@@ -75,9 +199,35 @@ datamart, ou o contrário.
 substituição `spark-TENANT-config` que a DAG produtiva já faz funciona sem nenhuma alteração. Essa
 simetria é o que torna o patch aceitável upstream.
 
+### O que o re-sync apaga, e o que ganha
+
+Somem `PipelineGoldClickHouse` e `PipelineDatamartWrapper`, adições do fork que gravavam por `append`
+simples — substituídas por T2.3.
+
+Entra o que o fork não tinha: **`RepositoryGoldDatamart`**, o braço Postgres pronto, com staging via JDBC
+e `INSERT ... ON CONFLICT`. É o molde que T2.3 espelha e o que reduz T2.4 a conferência.
+
+### A imagem precisa carregar esse código
+
+Rsync sozinho não muda o que roda no cluster: `honeycomb:poc` era overlay de
+`hub.datawake.cloud/dw-dados/honeycomb:latest`, e o app vinha de lá — sem `datamart_ch` na factory e
+com o `INTERVAL 10 DAYS` na query. O registry não publica a 3.3.0 (só `3.9.0`..`3.9.10`), então a base
+passa a sair do `Dockerfile` da própria release, que veio no rsync e é auto-contido:
+
+```bash
+docker build -f spark-source-code/Dockerfile -t honeycomb:3.3.0-local spark-source-code/
+docker build -f images/spark/Dockerfile      -t honeycomb:poc         images/spark/
+docker save honeycomb:poc | docker exec -i minikube docker load
+```
+
+> **O `minikube image load` é no-op silencioso quando a tag já existe no nó**, mesmo com
+> `--overwrite=true`. Com `imagePullPolicy: Never`, o pod acha a tag e roda o código velho — job verde,
+> evidência inválida. Ver [incidente #12](../TROUBLESHOOTING.md#12-minikube-image-load-nao-substitui-tag-existente).
+
 ### Artefatos
 
-`spark-source-code/` (substituído), `src/main/utils/config_manager.py` (alterado).
+`spark-source-code/` (substituído), `src/main/utils/config_manager.py` (alterado),
+`images/spark/Dockerfile` (reescrito), `scripts/bootstrap.sh` (alterado).
 
 ### Aceite
 
@@ -94,10 +244,75 @@ A suíte unitária do honeycomb passa **sem nenhuma alteração** após o rsync.
 
 ---
 
+## T2.5 — Contrato de entrada da silver
+
+**Não é task de código.** O usuário ingere as tabelas silver já em Delta, vindas de outro lugar. O
+repositório não converte, não copia e não valida — só declara onde o dado precisa estar para o resto do
+épico funcionar.
+
+### O contrato
+
+```
+s3a://datamart/business_datavault_data-bee/<tabela>/     ← tabela Delta
+```
+
+`<tabela>` é o `name` de cada entrada de `tables` no documento Mongo do tenant, conforme o
+[contrato da silver](#contrato-da-silver--fechado): `dw_andon_peso`, `dw_ordem_producao`,
+`dw_unidade_producao`, `dw_material`.
+
+A query lê **por caminho Delta**, não por catálogo — é o que permite dispensar o Trino. Uma tabela Delta
+por nome, com todas as filiais dentro: a discriminação é por coluna, não por caminho.
+
+### Colunas que a query exige
+
+Lidas dos predicados de join de `resources/queries/fact_200_cep.sql`:
+
+| Tabela | Colunas usadas |
+|---|---|
+| `dw_andon_peso` | `id`, `unidade_origem`, `dataset_origem`, `nr_ordem_producao`, `unidade_producao_nome`, `material`, `data_hora`, `real`, `limite_superior`, `limite_inferior` |
+| `dw_ordem_producao` | `id`, `unidade_origem`, `dataset_origem`, `nr_ordem_producao`, `produto_id` |
+| `dw_unidade_producao` | `id`, `unidade_origem`, `dataset_origem`, `codigo` |
+| `dw_material` | `id`, `unidade_origem`, `dataset_origem`, `codigo` |
+
+> **`unidade_origem` e `dataset_origem` são colunas do dado, não do caminho.** Os três `INNER JOIN` da
+> query casam por elas. Se vierem ausentes, o job morre em `UNRESOLVED_COLUMN` — e nenhuma conferência de
+> caminho teria pego.
+
+### Aceite
+
+As quatro tabelas existem como Delta nos caminhos acima, com as colunas da tabela acima, e o
+[T3.0](E3-validacao.md#t30--portão-de-janela) consegue medir a distribuição de `data_hora`.
+
+**Cumprido em 2026-09-10.** Conferido sem Spark, lendo o `schemaString` do `metaData` de cada checkpoint
+Delta pelo `s3()` do ClickHouse: as quatro tabelas existem com o nome `dw_`, todas trazem `id`,
+`unidade_origem` e `dataset_origem`, e `real`/`limite_superior`/`limite_inferior` vêm como
+`decimal(5,1)` — o que confirma o `Decimal(9,3)` da DDL. Falta só o T3.0, que mede a distribuição.
+
+### Riscos
+
+| Risco | Sinal | Mitigação |
+|---|---|---|
+| Caminho ou nome divergente do contrato | `Path does not exist` na primeira execução do braço | Contrato acima, conferido pelo usuário na ingestão |
+| Tabela vazia | O braço conclui com **sucesso** e zero linha | O assert de contagem de T2.6 acusa |
+| Silver recarregada durante o DagRun | Os dois braços leem conteúdos diferentes | Premissa 3 — não ingerir com DAG ativa |
+
+---
+
 ## T2.2 — Janela de carga
 
 Corrige o defeito **D1** ([ARQUITETURA.md §4](../ARQUITETURA.md#4-defeitos-verificados-no-ambiente)).
 Decisão em [ADR-004](../decisoes/ADR-004-janela-de-carga.md).
+
+> **Esta é a task mais importante do épico na versão 3.0.** Sem a gold materializada, a janela é a única
+> coisa que faz os dois braços verem o mesmo conjunto de linhas. Na 2.0 ela corrigia um defeito de
+> escrita; aqui ela sustenta o experimento inteiro.
+
+### Os dois problemas que a janela resolve
+
+| Problema | Sem a janela | Com a janela |
+|---|---|---|
+| **Determinismo entre os braços** | `current_timestamp()` anda entre a execução do braço PG e a do CH: recortes diferentes, contagens diferentes | O corte é literal e vem do DagRun — idêntico nos dois |
+| **D1, incremento parcial** | Trocar a partição `202609` com um DataFrame de dias 10–20 **apaga** os dias 1–9 | A janela alinha ao mês, e a guarda recusa cobertura parcial |
 
 ### O problema, concretamente
 
@@ -108,22 +323,26 @@ WHERE to_timestamp(substring(dap.data_hora, 1, 23), 'yyyy-MM-dd HH:mm:ss.SSS')
       >= current_timestamp() - INTERVAL 10 DAYS
 ```
 
-Com `PARTITION BY toYYYYMM(timestamp)`, trocar a partição `202609` com um DataFrame que contém só os dias
-10–20 **apaga os dias 1–9 de setembro**. Sem erro, sem aviso. A contagem da partição simplesmente cai.
+Duas falhas na mesma linha: o predicado é **aberto à direita e móvel**, e não tem fronteira de mês. Com
+`PARTITION BY toYYYYMM(timestamp)` no destino, trocar a partição `202609` com um DataFrame que contém só
+parte do mês apaga o resto. Sem erro, sem aviso. A contagem da partição simplesmente cai.
 
 ### Ações
 
 1. `src/main/utils/queryutils.py`, função `build_query`: acrescentar os placeholders `JANELA_INICIO` e
-   `JANELA_FIM` à substituição que já existe para `MINIO_BASE_PATH` e `S3_PATH_SILVER`. São ~6 linhas, e é
-   uma mudança digna de upstream.
+   `JANELA_FIM` à substituição que já existe para `MINIO_BASE_PATH`, `S3_PATH_SILVER` e `S3_PATH_GOLD`.
+   São ~6 linhas, e é uma mudança digna de upstream. Os valores vêm de `config_params`, não do ambiente —
+   é o que permite a DAG passá-los por execução.
 2. `resources/queries/fact_200_cep.sql`: substituir o predicado por
    ```sql
    WHERE ts >= 'JANELA_INICIO' AND ts < 'JANELA_FIM'
    ```
    com os limites arredondados para o primeiro dia do mês.
-3. Guarda executável antes da troca, no repositório:
+3. Guarda executável no repositório de destino, antes da troca:
    - `min(df.timestamp) >= JANELA_INICIO`
    - `JANELA_INICIO == toStartOfMonth(JANELA_INICIO)`
+4. **Falhar quando o parâmetro faltar.** Sem janela informada, abortar — nunca cair de volta para
+   `current_timestamp()`. O fallback silencioso reintroduziria D1 exatamente onde ninguém olharia.
 
 ### Artefatos
 
@@ -131,17 +350,44 @@ Com `PARTITION BY toYYYYMM(timestamp)`, trocar a partição `202609` com um Data
 
 ### Aceite
 
-Carregar duas vezes a mesma janela e a contagem da partição **não muda**:
+Duas conferências, não uma:
+
 ```bash
-ch --query "SELECT count() FROM dm_acme.fact_200_cep WHERE toYYYYMM(timestamp)=202609"
-# roda a carga de novo
-ch --query "SELECT count() FROM dm_acme.fact_200_cep WHERE toYYYYMM(timestamp)=202609"
+# 1. Idempotência: recarregar a mesma janela não muda a contagem da partição
+bash scripts/ports.sh --only clickhouse
+curl -s "http://localhost:8123/?user=..." --data-binary \
+  "SELECT count() FROM dm_acme.fact_200_cep WHERE toYYYYMM(timestamp)=202609"
 ```
-Os dois números são iguais.
+
+```sql
+-- 2. Determinismo entre braços: a MESMA janela nos dois lados dá a MESMA contagem
+SELECT count() FROM dm_acme.fact_200_cep WHERE toYYYYMM(timestamp)=202609;   -- ClickHouse
+SELECT count(*) FROM public.fact_200_cep WHERE date_trunc('month', timestamp) = '2026-09-01';  -- Postgres
+```
+
+Os números de (2) são iguais. É este assert que substitui a garantia estrutural da 2.0.
+
+### Riscos
+
+| Risco | Sinal | Mitigação |
+|---|---|---|
+| Janela não propagada até a query | Job roda e carrega o recorte errado, **sem erro** | Logar a query final resolvida, uma vez, no início do job |
+| Fallback para `current_timestamp()` | Divergência intermitente entre os braços, irreprodutível | Abortar quando o parâmetro faltar (ação 4) |
+| Janela fora do intervalo do dado | Carga vazia com **sucesso** | Distribuição de `data_hora` medida em [T3.0](E3-validacao.md#t30--portão-de-janela), que roda antes |
 
 ---
 
-## T2.3 — Repositório ClickHouse
+## T2.3 — Braço ClickHouse
+
+### A leitura, que agora vem de graça
+
+O braço herda `read()` e `transform()` de `PipelineGold`: a query sobre a silver, mais `hk_business_id`
+(SHA-256 das colunas de `chave_pk`) e `load_dts`. **Só o `save()` é novo.** É a forma que o fork já tem;
+o que T2.3 troca é o destino do `save`, hoje um `writeTo(...).append()` simples.
+
+> **`load_dts` é `current_timestamp()`, avaliado em cada braço.** Os dois datamarts terão valores
+> diferentes nessa coluna, por construção. Comparação linha a linha no [E3](E3-validacao.md) precisa
+> excluí-la explicitamente — é o falso positivo mais provável do portão de corretude.
 
 ### O que o connector não faz
 
@@ -159,12 +405,12 @@ Os dois números são iguais.
 dependência nova, zero jar novo.
 
 E a DDL das tabelas **não** passa pelo Spark: fica em `ddl/`, aplicada por Job, para preservar
-`LowCardinality(String)` e `Decimal(18,4)` exatos.
+`LowCardinality(String)` e `Decimal(9,3)` exatos.
 
 ### Ações
 
 1. `src/main/utils/clickhouse_datamart.py` — cliente HTTP para DDL e troca de partição.
-2. `RepositoryGoldDatamartClickhouse` em `src/main/repo/repository.py`, com esta sequência de escrita:
+2. `RepositoryDatamartClickhouse` em `src/main/repo/repository.py`, com esta sequência de escrita:
    ```
    1. particoes = df.select(date_format("timestamp","yyyyMM")).distinct().collect()
    2. GUARDA DE COBERTURA INTEGRAL                                          ← D1
@@ -175,18 +421,18 @@ E a DDL das tabelas **não** passa pelo Spark: fica em `ddl/`, aplicada por Job,
    6. para cada p: ALTER TABLE {db}.{tabela} REPLACE PARTITION '{p}' FROM {db}.{stg}
    7. finally: DROP TABLE {db}.{stg}
    ```
-3. `PipelineGoldDatamartClickhouse` em `core/pipeline_orchestrator.py`.
-4. Chave `gold_datamart_clickhouse` em `core/pipeline_factory.py`.
+3. `PipelineDatamartClickhouse` em `core/pipeline_orchestrator.py`, herdando de `PipelineGold` e
+   sobrescrevendo só o `save()`.
+4. Chave `datamart_ch` em `core/pipeline_factory.py`, substituindo a `datamart` genérica do fork.
 5. DDL em `ddl/clickhouse/01_fact_200_cep.sql` conforme
    [ARQUITETURA.md §3.2](../ARQUITETURA.md#32-ddl-alvo).
-6. Teste de integração com testcontainers, espelhando
-   `tests/integration/test_repository_gold_datamart.py`, **incluindo caso de recarga da mesma partição**.
+6. Teste de integração com testcontainers, **incluindo caso de recarga da mesma partição**.
 
 ### Notas sobre cada passo
 
 | Passo | Armadilha |
 |---|---|
-| 3 | Uma staging **por execução**, não por partição. `CREATE TABLE AS` copia estrutura, engine, `ORDER BY`, `PARTITION BY` e política de armazenamento — os três requisitos do `REPLACE PARTITION`. O sufixo `uuid4` evita colisão entre filiais concorrentes |
+| 3 | Uma staging **por execução**, não por partição. `CREATE TABLE AS` copia estrutura, engine, `ORDER BY`, `PARTITION BY` e política de armazenamento — os três requisitos do `REPLACE PARTITION`. O sufixo `uuid4` evita colisão entre execuções concorrentes |
 | 4 | O `repartition` pela expressão de partição evita `Code 252 TOO_MANY_PARTS`: sem ele, cada task escreve em todas as partições e são geradas `tasks × partições` parts |
 | 4 | Manter `async_insert` **desligado** neste caminho — queremos um INSERT grande por task, não micro-lotes |
 | 6 | A atomicidade é **por partição**, não pelo conjunto. Com 3 meses tocados há uma janela em que 1 de 3 está trocado. Aceitável na POC; testar comandos separados por vírgula num único `ALTER` é barato e pode resolver |
@@ -204,12 +450,12 @@ S3A que já existe. Credenciais por *named collection*, nunca inline — inline 
 `src/main/utils/clickhouse_datamart.py`, `src/main/repo/repository.py` (alterado),
 `src/main/core/pipeline_orchestrator.py` (alterado), `src/main/core/pipeline_factory.py` (alterado),
 `ddl/clickhouse/01_fact_200_cep.sql`,
-`tests/integration/test_repository_gold_datamart_clickhouse.py`.
+`tests/integration/test_repository_datamart_clickhouse.py`.
 
 ### Aceite
 
 ```bash
-pytest -m integration tests/integration/test_repository_gold_datamart_clickhouse.py -q
+pytest -m integration tests/integration/test_repository_datamart_clickhouse.py -q
 ```
 `passed`, incluindo o caso de recarga da mesma partição.
 
@@ -217,9 +463,10 @@ pytest -m integration tests/integration/test_repository_gold_datamart_clickhouse
 
 | Risco | Sinal | Mitigação |
 |---|---|---|
-| **D1**: incremento parcial | `count()` da partição **cai** entre execuções, sem erro | Guarda do passo 2 + query por janela (T2.2) |
+| **D1**: incremento parcial | `count()` da partição **cai** entre execuções, sem erro | Guarda do passo 2 + janela (T2.2) |
+| `chave_pk` vazia | Todo `hk_business_id` colide; o `ReplacingMergeTree` colapsa a tabela para poucas linhas, **sem erro** | Assert `count(distinct hk_business_id) == count(*)` no aceite |
 | `NULL` em coluna de particionamento | `Code 349 CANNOT_CONVERT_TO_NULLABLE` no meio da carga | Limpeza no `transform` compartilhado (T2.4) |
-| Staging concorrente entre filiais | `Table ..._stg already exists`, ou troca com dado da outra filial | Sufixo `uuid4().hex[:8]` |
+| Staging concorrente | `Table ..._stg already exists`, ou troca com dado de outra execução | Sufixo `uuid4().hex[:8]` |
 | `Code 252 TOO_MANY_PARTS` | INSERT rejeitado após alguns lotes | `repartition` no passo 4 |
 | Política de armazenamento divergente | `Tables have different storage policies` | `CREATE TABLE AS` garante hoje; quebra se um dia houver tiering só no destino |
 
@@ -227,17 +474,33 @@ pytest -m integration tests/integration/test_repository_gold_datamart_clickhouse
 
 ## T2.4 — Braço Postgres e simetria experimental
 
+### Onde a simetria vive na versão 3.0
+
+Na 2.0 a simetria era estrutural: os dois braços liam o mesmo arquivo. Aqui ela tem **duas fontes**, e
+convém saber qual cobre o quê:
+
+| Fonte | O que garante | O que não garante |
+|---|---|---|
+| Herança de `PipelineGold` | `read()` e `transform()` são literalmente o mesmo código nos dois braços | Nada sobre *quando* cada um roda |
+| Janela explícita (T2.2) | Os dois recortam o mesmo intervalo, mesmo rodando em instantes diferentes | Nada se a silver mudar no meio |
+
+O que sobra descoberto é a premissa 3 — silver parada durante a DAG. Não há como o código garantir isso;
+está registrado como risco em T2.6.
+
 ### Ações
 
-1. Extrair `read()` e `transform()` de `RepositoryGoldDatamart` para uma classe base comum, herdada pelos
-   dois braços. **Só o `write()` difere.**
+1. Confirmar que `PipelineDatamartPostgres` e `PipelineDatamartClickhouse` herdam de `PipelineGold` e
+   sobrescrevem **só** `save()`. Se algum precisar tocar `read()` ou `transform()`, a diferença sobe para
+   a base — nunca fica em um dos ramos.
 2. No `transform` compartilhado, acrescentar a limpeza:
    ```python
    .na.drop(subset=["timestamp", "filial", "banco", "unidade_producao_id"])
    ```
    logando a contagem descartada.
-3. Trocar `CAST(... AS DOUBLE)` por `DECIMAL(18,4)` na query — **nos dois braços**, senão o
-   `get_type_sql` do Postgres mapeia para `DOUBLE PRECISION` e a comparação numérica desalinha.
+3. Trocar `CAST(... AS DOUBLE)` por `DECIMAL(9,3)` na query — assim os **dois** braços recebem o tipo
+   certo da origem, em vez de cada um converter por conta. Precisão 9 porque a origem é `Decimal(5,1)`,
+   medida no Parquet real: cabe em `Decimal32` (4 bytes), enquanto 10 a 18 forçam `Decimal64` (8).
+4. Chave `datamart_pg` em `core/pipeline_factory.py`.
 
 ### Por que a limpeza precisa ser compartilhada
 
@@ -246,13 +509,12 @@ pytest -m integration tests/integration/test_repository_gold_datamart_clickhouse
 `dop.produto_id`/`dup.id` vêm de `INNER JOIN` mas passam se a silver tiver a coluna nula.
 
 > Se só o braço ClickHouse limpar, as contagens divergem e a tabela de corretude (T3.1) acusa uma diferença
-> que **não é do motor** — o benchmark perde credibilidade por um bug nosso. A simetria é o que permite a
-> afirmação mais forte da apresentação: *"mesma leitura, mesma transformação, mesma máquina — só o destino
-> muda"*.
+> que **não é do motor** — o benchmark perde credibilidade por um bug nosso.
 
 ### Artefatos
 
-`src/main/repo/repository.py` (refatorado), `resources/queries/fact_200_cep.sql` (alterado).
+`src/main/repo/repository.py` (refatorado), `resources/queries/fact_200_cep.sql` (alterado),
+`src/main/core/pipeline_factory.py` (alterado).
 
 ### Aceite
 
@@ -263,59 +525,31 @@ Mais: `pytest -q` continua passando.
 
 ---
 
-## T2.5 — Carga bronze
+## T2.6 — DAG
 
-### Contrato de layout
-
-O `bronze_silver` lê Parquet **exatamente** deste caminho:
+**Uma** DAG por tenant, `k8s_<tenant>_datamart`, com duas tasks. Cópia de
+`dtlk-airflow-pipeline/dags/k8s_unipac_bronze_silver.py` com o mínimo de alteração possível.
 
 ```
-s3a://datamart/data-bee_replication/data-bee_<filial>/<tabela>/*.parquet
+k8s_<tenant>_datamart   (schedule do documento Mongo)
+    │
+    ├── carga_postgres    SparkKubernetesOperator  --pipeline datamart_pg
+    └── carga_clickhouse  SparkKubernetesOperator  --pipeline datamart_ch
 ```
 
-`<filial>` é o valor que aparece em `filiais[]` no documento Mongo, e `<tabela>` é o `name` de cada entrada
-de `tables`. Um caminho errado não produz erro — produz um job que conclui com sucesso e uma silver vazia.
+### Por que uma DAG e não duas encadeadas por Dataset
 
-### Ações
+Na 2.0, o Dataset `honeycomb://<tenant>/gold` existia porque havia um **produtor**: a DAG de gold. Sem
+gold materializada não há produtor, e um Dataset ancorado na silver seria disparado pela carga manual do
+usuário — que não é uma DAG.
 
-1. Substituir o placeholder `scripts/seed-bronze.sh` por `scripts/load-bronze.sh`, com modo `--validate`.
-2. `--validate` lê o documento Mongo do tenant, percorre cada combinação filial × tabela, e **falha
-   nomeando o caminho ausente**.
-3. Modo de carga: `mc mirror` de um diretório local para o prefixo correto, derivando o destino do
-   documento Mongo em vez de exigir que o usuário monte o caminho à mão.
+O ganho não é só de simplificação. As duas tasks no mesmo DagRun compartilham `data_interval_start` e
+`data_interval_end`, que é de onde saem `JANELA_INICIO` e `JANELA_FIM`. **A janela idêntica nos dois
+braços passa a ser consequência da estrutura da DAG**, não de dois agendamentos concordarem.
 
-### Artefatos
-
-`scripts/load-bronze.sh` (substitui `seed-bronze.sh`).
-
-### Aceite
-
-```bash
-bash scripts/load-bronze.sh --validate
-```
-Lista os Parquet encontrados por filial × tabela, ou falha nomeando o primeiro caminho ausente.
-
-### Riscos
-
-| Risco | Sinal | Mitigação |
-|---|---|---|
-| Dado real fora do layout | `bronze_silver` loga "nenhum arquivo" e **conclui com SUCESSO** — falha silenciosa | `--validate` falha antes; e assert de contagem > 0 ao fim do job |
-
----
-
-## T2.6 — DAGs
-
-Três arquivos, cópias de `dtlk-airflow-pipeline/dags/k8s_unipac_bronze_silver.py` com o mínimo de
-alteração possível.
-
-| DAG | Schedule | Pipeline |
-|---|---|---|
-| `k8s_<tenant>_bronze_silver.py` | do documento Mongo | `bronze_silver` |
-| `k8s_<tenant>_gold_datamart_pg.py` | `[Dataset("honeycomb://<tenant>/silver")]` | `gold_datamart` |
-| `k8s_<tenant>_gold_datamart_ch.py` | `[Dataset("honeycomb://<tenant>/silver")]` | `gold_datamart_clickhouse` |
-
-**As duas DAGs gold disparam do mesmo Dataset.** O mesmo silver alimenta os dois braços automaticamente —
-o rigor experimental sai de graça do padrão produtivo.
+As duas tasks rodam **em sequência**, não em paralelo: o nó tem ~3 GiB livres do orçamento de E1, e dois
+drivers Spark com seus executores não cabem juntos. O E3 mede latência de **leitura** no destino, então
+o tempo de parede da carga não é variável do experimento.
 
 ### O que preservar literalmente
 
@@ -323,40 +557,69 @@ o rigor experimental sai de graça do padrão produtivo.
 |---|---|
 | `serverSelectionTimeoutMS=5000` no `MongoClient` | Sem isso, o Mongo fora do ar estoura o `dagbag_import_timeout` e a DAG some do DagBag |
 | `try/except` de parse time degradando para `schedule=None` | A DAG entra em modo manual em vez de desaparecer |
-| `expand_kwargs(montar_execucoes())` | Dynamic task mapping: 1 `SparkApplication` por filial |
-| `outlets` na task **não-mapeada** (`publicar_silver`, `trigger_rule="all_done"`) | Na task mapeada, o Dataset dispara o gold **uma vez por filial** |
-| `max_active_tis_per_dag=1` | Duas filiais na mesma tabela causam perda de dado no `bronze_silver` (overwrite sem proteção). **Replicá-lo mantém a POC fiel; removê-lo perde dado real do usuário** |
 | Manifesto externo com placeholders `TENANT`/`VERSION`, sobrescrevendo **só** `spec.arguments` | É o padrão produtivo |
+
+### O que sai em relação à 1.0 e à 2.0
+
+| Elemento | Por quê sai |
+|---|---|
+| DAG `k8s_<tenant>_bronze_silver.py` | O passo não está no escopo |
+| DAG `k8s_<tenant>_gold.py` e o Dataset | A gold não é mais materializada — não há produtor |
+| `outlets` / `Dataset(...)` | Sem encadeamento entre DAGs, não há o que publicar |
+| `expand_kwargs(montar_execucoes())` | O mapeamento dinâmico existia para rodar **1 pod por filial** na bronze→silver |
+| `max_active_tis_per_dag=1` | Existia para evitar que duas filiais na mesma tabela se sobrescrevessem no `bronze_silver`. Sem tasks mapeadas, não há concorrência a limitar |
+| Roteamento por `gold_type` de três vias | As tasks daqui são de destino único, uma cada — ver `airflow/mongo-seed/README.md` |
+
+> Os três últimos saem **como consequência** de o `bronze_silver` sair, não por decisão independente. Se o
+> passo voltar ao escopo, voltam junto — e o `max_active_tis_per_dag=1` não é opcional lá: sem ele, duas
+> filiais na mesma tabela perdem dado real do usuário.
 
 ### Artefatos
 
-`airflow/dags/k8s_<tenant>_{bronze_silver,gold_datamart_pg,gold_datamart_ch}.py`,
-`airflow/dags/manifests/spark-honeycomb-{bronze-silver,gold-datamart-pg,gold-datamart-ch}.yaml`.
+`airflow/dags/k8s_<tenant>_datamart.py`,
+`airflow/dags/manifests/spark-honeycomb-datamart-{pg,ch}.yaml`.
 
 ### Aceite
 
 ```bash
-airflow dags trigger k8s_acme_bronze_silver
+kubectl -n airflow exec statefulset/airflow-scheduler -c scheduler -- \
+  airflow dags trigger k8s_acme_datamart
 ```
-1. Uma `SparkApplication` por filial;
-2. as duas DAGs gold disparam **sozinhas** pelo Dataset, sem trigger manual;
+1. As duas tasks concluem `success`;
+2. Postgres e ClickHouse têm a **mesma contagem** na partição carregada;
 3. `airflow dags list-import-errors` continua vazio.
 
-### Riscos
+### Riscos {#riscos-4}
 
 | Risco | Sinal | Mitigação |
 |---|---|---|
-| Dataset dispara o gold N vezes | N DagRuns do gold por rajada | `outlets` na task não-mapeada |
+| Silver alterada durante o DagRun | Contagens divergentes entre os braços, irreprodutível | Premissa 3. Carregar a silver com a DAG pausada; o aceite (2) acusa |
+| Os dois drivers Spark simultâneos | `OOMKilled` no nó, ou pod `Pending` sem recurso | Tasks em sequência, não em paralelo |
 | SA errada no RoleBinding | `serviceaccount:airflow:airflow-worker cannot create sparkapplications` | RoleBinding para `airflow-scheduler` (E1 T1.7) |
+| Falha do braço PG deixa o CH sem carga | Cadeia interrompida com um datamart carregado e o outro não | `trigger_rule="all_done"` na segunda task, e o portão do E3 exige os dois |
 
 ---
 
 ## Checklist Go/No-Go do épico
 
 - [ ] `pytest -q` da suíte unitária passa após o rsync, sem alteração
-- [ ] Recarregar a mesma janela duas vezes não muda a contagem da partição
+- [ ] As 4 tabelas silver estão em Delta sob `business_datavault_data-bee/`, com os nomes `dw_` do contrato
+- [ ] As 4 têm `id`, `unidade_origem` e `dataset_origem`
+- [ ] A query aborta quando `JANELA_INICIO`/`JANELA_FIM` não são informados
+- [ ] Recarregar a mesma janela duas vezes não muda a contagem da partição no ClickHouse
+- [ ] `count(distinct hk_business_id) == count(*)` nos dois destinos
+- [ ] Postgres e ClickHouse têm a **mesma contagem** para a mesma janela
 - [ ] `pytest -m integration` do repositório ClickHouse passa, incluindo recarga
 - [ ] O diff entre os dois repositórios toca exclusivamente `write()`
-- [ ] `bash scripts/load-bronze.sh --validate` passa com o dado real do usuário
-- [ ] Um trigger no `bronze_silver` dispara as duas DAGs gold pelo Dataset
-- [ ] Postgres e ClickHouse contêm dado ao fim do encadeamento
+- [ ] Um trigger na DAG carrega os dois destinos
+
+## O que este épico NÃO prova
+
+- **Que a ingestão inteira funciona.** O passo bronze → silver ficou fora, e a própria entrada da silver
+  é do usuário; a POC começa numa silver que já existe.
+- **Que a gold em Delta funciona.** Foi retirada do escopo por decisão de produto. A POC não produz
+  evidência a favor nem contra ela.
+- **Que os dois braços leram exatamente as mesmas linhas.** Prova que leram o **mesmo recorte declarado**
+  e chegaram à mesma contagem. Com a silver parada isso é equivalente; com a silver em movimento, não.
+- **Desempenho de carga.** A POC mede latência de **leitura** no destino, não velocidade de ingestão.
+- **Que o patch é aceitável upstream.** É candidato. Quem decide é a revisão do honeycomb.

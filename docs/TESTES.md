@@ -674,20 +674,60 @@ porque nenhum dos dois aparece em teste de caminho feliz:
 
 ## 5. Épico 2 — Execução
 
-⬜ **Nenhum teste executado.** Nenhuma das 6 tasks foi implementada.
+🟨 **T2.1, T2.2 e T2.3 executadas em 2026-09-09**, contra o honeycomb **3.3.0** (`a5f2fa4`).
+Ambiente: pod efêmero a partir de `honeycomb:poc`, com `pytest` instalado em `--user`.
+
+### 5.1 Resultados
+
+| Aceite | Comando | Resultado |
+|---|---|---|
+| T2.1 — a suíte passa sem alteração após o rsync | `pytest -q` | **173 passed, 28 deselected** |
+| T2.1 — controle: a tag pura dá o mesmo | `pytest -q` sobre `3.3.0` intocada | **173 passed, 28 deselected** |
+| T2.2 — as queries parseiam com a janela | parser real do Spark sobre as 2 `.sql` | **0 falhas** |
+| T2.2 — o build recusa sem janela | `build_query` sem runtime | `ValueError: fact_200_cep.sql exige JANELA_INICIO` |
+| T2.2 — sem regressão | `pytest -q` | **179 passed** (+6) |
+| T2.3 — troca de partição | `pytest -m integration ...datamart_clickhouse.py` | **5 passed** em 33s |
+
+Os dois valores de T2.1 serem idênticos é o que prova que o rsync e as edições não introduziram nada.
+
+### 5.2 Casos de T2.3, contra o ClickHouse real
+
+Executados com `u_acme_loader`, não com `dm_admin` — então validam também o `GRANT ALTER MOVE PARTITION`
+do template de RBAC (T1.5).
+
+| Caso | O que prova |
+|---|---|
+| T-E2-01 sequência completa | staging criada, carregada, conferida, trocada e **descartada** |
+| T-E2-02 recarga da mesma janela | contagem não muda — é o **D1** fechado |
+| T-E2-03 janela fora da fronteira do mês | recusa antes de tocar o destino |
+| T-E2-04 janela ausente | recusa — não há fallback para `current_timestamp()` |
+| T-E2-05 dado anterior à janela | recusa: o DataFrame extrapola o que declarou |
+
+### 5.3 Por que a base é `3.3.0` e não `main`
+
+Apurado ao executar T2.1. Em `main` (`b0d7472`) a `fact_200_cep.sql` virou `UNION ALL` de 9 tabelas silver
+mais a gold `dim_limites`, **sem filtro temporal**, com `data_hora` em 6 casas decimais. O dado ingerido
+tem 4 tabelas e 3 casas. Detalhamento em [ADR-001](decisoes/ADR-001-resync-honeycomb.md).
+
+### 5.4 O que falta no épico
 
 | Task | Bloqueado por |
 |---|---|
-| T2.1 — Re-sync com `honeycomb@main` | Acesso ao repositório do honeycomb |
-| T2.2 — Janela de carga | T2.1 |
-| T2.3 — Repositório ClickHouse | T2.1, T1.3 |
-| T2.4 — Braço Postgres | T2.1, T1.4 |
-| T2.5 — Carga bronze | Dado real do usuário |
-| T2.6 — DAGs | T1.6, T1.7 |
+| T2.4 — Braço Postgres | nada. `dm_acme`/`dm_globex` criados em 2026-09-10 |
+| T2.6 — DAG | nada |
 
-O único elemento de E2 já exercitado é o `REPLACE PARTITION` (T-E1-19), pelo caminho de privilégios.
+T2.5 (contrato de entrada) está satisfeito: as 4 tabelas silver foram ingeridas e verificadas.
 
----
+Três bloqueios de ambiente foram levantados e fechados em 2026-09-10, nenhum deles visível no código:
+
+| Bloqueio | Como se manifestava | Correção |
+|---|---|---|
+| `honeycomb:poc` não carregava o patch | `--pipeline datamart_ch` morreria em `KeyError` na factory | Base passa a ser `honeycomb:3.3.0-local`, do `Dockerfile` da release |
+| `minikube image load` não substitui tag | Pod roda o código velho, **verde** | `docker save \| docker exec -i minikube docker load` — [incidente #12](TROUBLESHOOTING.md#12-minikube-image-load-nao-substitui-tag-existente) |
+| `job-init` do Postgres nunca invocado | `dm_acme`/`dm_globex` inexistentes | ConfigMap + Job no passo 8/12 do `bootstrap.sh` |
+
+O aceite de T2.4 e T2.6 continua dependendo de execução real: nenhum job Spark rodou contra a silver
+até aqui, e a junção das quatro tabelas nunca foi executada.
 
 ## 6. Épico 3 — Validação
 
@@ -878,6 +918,11 @@ silêncio, e o serviço fica saudável.
 **Correção:** `infra/postgres/job-init.yaml`, Job idempotente, simétrico ao `job-rbac.yaml` do ClickHouse.
 O SQL vive em `ddl/postgres/01_tenants.sql` — arquivo único, montado por ConfigMap gerada dele. Roda em
 qualquer estado do volume e pode ser reaplicado.
+
+> **A correção ficou escrita e nunca foi chamada.** O `bootstrap.sh` subia o StatefulSet e parava ali:
+> nem a ConfigMap `pg-init-sql` nem o Job eram aplicados, e o defeito seguiu vivo até 2026-09-10. O
+> mesmo padrão do defeito que ele corrige — a coisa declarada é ignorada em silêncio. Fechado agora:
+> `CREATE DATABASE` ×2, `pg_stat_statements` nos dois, conferido em `pg_database`.
 
 ### D11 — RBAC por database não basta para o connector Spark
 

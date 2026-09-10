@@ -2,6 +2,7 @@ import logging
 import json
 import requests
 import datetime
+import threading
 import time
 import random
 import uuid
@@ -11,6 +12,46 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 from concurrent.futures import ThreadPoolExecutor
 from logging import LoggerAdapter
+
+# --------------------------------------------------------------------------------------------
+# Contexto de tabela por THREAD.
+#
+# No modo multi-tabela varias threads processam tabelas diferentes escrevendo no MESMO logger
+# singleton (`AppLogger`). Sem isso, os logs das N tabelas se intercalam no stdout do driver
+# sem nenhuma forma de saber a qual tabela cada linha pertence.
+#
+# A escolha por threading.local + Filter, em vez de passar um LoggerAdapter pela cadeia de
+# chamadas, e deliberada: todas as classes (repositories, transformers, pipelines) ja chamam
+# `initialize_logger()` e recebem o mesmo singleton. O filtro injeta o contexto sem exigir
+# alteracao em nenhuma delas.
+# --------------------------------------------------------------------------------------------
+_contexto_thread = threading.local()
+
+
+def set_current_table(nome: str | None) -> None:
+    """Marca a tabela que a thread atual esta processando (ou None para limpar)."""
+    _contexto_thread.tabela = nome
+
+
+def get_current_table() -> str | None:
+    return getattr(_contexto_thread, "tabela", None)
+
+
+class TableContextFilter(logging.Filter):
+    """Injeta `record.tabela` a partir do contexto da thread.
+
+    Nao sobrescreve `tabela` quando o record ja traz o campo (ex.: vindo de um LoggerAdapter),
+    para nao atropelar um contexto mais especifico.
+    """
+
+    def filter(self, record):
+        if not getattr(record, "tabela", None):
+            record.tabela = get_current_table()
+        # Campo separado para o console: `tabela` vai crua para o ClickHouse (None quando nao
+        # ha contexto), enquanto `tabela_log` e o prefixo formatado — assim o formatter nao
+        # imprime "None" nas mensagens do modo single-table.
+        record.tabela_log = f"[{record.tabela}] " if record.tabela else ""
+        return True
 
 class TLSAdapter(HTTPAdapter):
     """
@@ -35,7 +76,10 @@ class ClickHouseAsyncHandler(logging.Handler):
         super().__init__()
         import os
         # Carrega configurações do ConfigManager
-        self.base_url = config.get("clickhouse.url").rstrip('/')
+        clickhouse_url = config.get("clickhouse.url")
+        if not clickhouse_url:
+            raise ValueError("clickhouse.url é obrigatória para o handler ClickHouse")
+        self.base_url = clickhouse_url.rstrip('/')
         self.auth = (
             config.get("clickhouse.username"),
             config.get("clickhouse.password")
@@ -144,16 +188,26 @@ def initialize_logger(config_manager=None):
     logger_base.setLevel(logging.INFO)
     logger_base.propagate = False
 
+    # Filtros ANTES dos handlers: no modo multi-tabela varias threads escrevem neste mesmo
+    # logger, e sem o prefixo de tabela o stdout do driver fica ilegivel.
+    logger_base.addFilter(TableContextFilter())
+
     # Handler para console
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(tabela_log)s%(message)s'
+    ))
     logger_base.addHandler(console_handler)
 
-    # Envio de logs para o ClickHouse é opcional. Desabilite com
-    # clickhouse.logs_enabled = false (default: habilitado, preserva o comportamento atual).
-    if str(config_manager.get("clickhouse.logs_enabled", True)).lower() == "true":
-        ch_handler = ClickHouseAsyncHandler(config_manager)
-        logger_base.addHandler(ch_handler)
+    # Sink ClickHouse é opcional: sem clickhouse.url (ex.: CLICKHOUSE_URL ausente no
+    # manifesto), degrada para console em vez de derrubar o job efêmero na importação.
+    if config_manager.get("clickhouse.url"):
+        logger_base.addHandler(ClickHouseAsyncHandler(config_manager))
+    else:
+        logger_base.warning(
+            "clickhouse.url não configurada (CLICKHOUSE_URL ausente): "
+            "logging remoto ClickHouse desativado; seguindo apenas com console."
+        )
 
     session_filter = SessionUidFilter()
     logger_base.addFilter(session_filter)
@@ -170,9 +224,16 @@ def apply_and_trace_context(logger_base, config, spark = None) -> LoggerAdapter:
     else: 
         applicationId = spark.sparkContext.applicationId    
 
+    # No modo multi-tabela a config base nao tem `table_name` — quem identifica a tabela de
+    # cada linha e o TableContextFilter, por thread. Aqui a rotina fica no nivel da filial.
+    rotina = (
+        f"{config.filial_name}_{config.table_name}"
+        if config.table_name else str(config.filial_name)
+    )
+
     contexto_inicial = {
-        "rotina": config.topic,
-        "cliente": config.config_name,
+        "rotina": rotina,
+        "cliente": config.tenant_name,
         "tabela": config.table_name,
         "id_session": applicationId
     }

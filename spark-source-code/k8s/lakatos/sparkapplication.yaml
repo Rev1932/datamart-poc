@@ -1,0 +1,145 @@
+# Template SparkApplication do SUPER TENANT Lakatos — pipeline `silver_super_tenant`.
+#
+# Consolida as camadas Silver JÁ PROCESSADAS de N clientes do Lakatos numa Silver única, onde
+# cada cliente vira uma FILIAL. Os tenants de origem seguem intactos: este job só LÊ os buckets
+# deles.
+#
+# É um TEMPLATE: `--tables_json` e `--source_tenants` são preenchidos por execução pela DAG do
+# Airflow (SparkKubernetesOperator, a partir do config no Mongo). Contrato da plataforma
+# `dw-dados` idêntico ao de k8s/sparkapplication.yaml.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  # Nome único por execução (evita colisão de SparkApplications concorrentes).
+  name: sst-lakatos-silver-00000001
+  namespace: dw-dados
+  labels:
+    app.kubernetes.io/name: spark-lakatos
+    app.kubernetes.io/part-of: dtlk
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: "hub.datawake.cloud/dw-dados/honeycomb:<TAG>"
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets:
+    - datawake-registry-secret
+  mainApplicationFile: "local:///opt/spark/app/src/main/main.py"
+  sparkVersion: "3.5.8"
+  restartPolicy:
+    type: Never          # job efêmero: falha → Failed (propaga o exit code do driver)
+  timeToLiveSeconds: 86400
+
+  nodeSelector:
+    alibabacloud.com/nodepool-id: npd3e04de863224bfa8a4f1f3b9dbf18b2
+
+  volumes:
+    # O prefixo `spark-local-dir-` NAO e decorativo — ver o comentário extenso em
+    # k8s/sparkapplication.yaml. Aqui o disco importa mais que num bronze_silver: a leitura full
+    # das Silvers de origem mais o shuffle do dedup por hk_business_id passam pelo spill.
+    - name: spark-local-dir-1
+      emptyDir:
+        sizeLimit: 20Gi
+
+    - name: clickhouse-ca
+      secret:
+        secretName: dtlk-clickhouse-ca
+        defaultMode: 0444
+        optional: false
+
+  arguments:
+    - "--pipeline"
+    - "silver_super_tenant"
+    # tenant_name = filial_name: o super tenant não tem filiais próprias. As "filiais" são os
+    # clientes, e vêm de --source_tenants. Estes dois campos alimentam o app-name e o contexto
+    # de log (utils/handler_logger.py).
+    - "--tenant_name"
+    - "lakatos"
+    - "--filial_name"
+    - "lakatos"
+    # Uma origem por cliente do Lakatos. Incluir um cliente novo é editar esta lista na DAG —
+    # sem rebuild de imagem e sem alterar o ConfigMap.
+    - "--source_tenants"
+    - '[{"tenant":"belafatia","base_path":"s3a://datawake-belafatia"}]'
+    # `chave_pk` é IGNORADO por este pipeline (o hk_business_id vem re-hasheado do hk já
+    # calculado na origem), mas continua obrigatório pelas guardas de `normalize_tables`.
+    # Recomendação: reaproveitar o MESMO tables_json das DAGs de bronze_silver dos clientes,
+    # para não manter duas listas que divergem.
+    - "--tables_json"
+    - '[{"name":"dw_ordem_producao","chave_pk":["id"]},{"name":"dw_material","chave_pk":["id"]}]'
+    - "--max_workers"
+    - "4"
+
+  sparkConf:
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    # Sem esta conf o `spark.scheduler.pool` por thread do TableRunner é inerte e as tabelas
+    # serializam em FIFO — o paralelismo do modo multi-tabela desaparece sem nenhum sintoma.
+    "spark.sql.adaptive.enabled": "true"
+    "spark.scheduler.mode": "FAIR"
+
+  driver:
+    cores: 1
+    coreRequest: "500m"
+    coreLimit: "1"
+    memory: "2g"
+    serviceAccount: spark
+    labels:
+      app.kubernetes.io/name: spark-lakatos
+      app.kubernetes.io/part-of: dtlk
+    env:
+      - name: PYTHONPATH
+        value: "/opt/spark/app/src/main"
+    envFrom:
+      # Ordem importa: o último vence. Se optar por credenciais S3A dedicadas para a leitura
+      # cross-bucket (ver k8s/lakatos/secret.example.yaml), `spark-lakatos-secret` precisa vir
+      # DEPOIS de `spark-secrets` — como está aqui.
+      - secretRef:
+          name: spark-secrets              # creds S3A da plataforma (usuário dw-app-spark-k8s)
+      - configMapRef:
+          name: spark-lakatos-config
+      - secretRef:
+          name: spark-lakatos-secret
+    volumeMounts:
+      - name: spark-local-dir-1
+        mountPath: /tmp/spark-local
+      - name: clickhouse-ca
+        mountPath: /etc/ssl/clickhouse
+        readOnly: true
+    tolerations:
+      - key: service-type
+        operator: Equal
+        value: high-memory
+        effect: NoSchedule
+
+  executor:
+    cores: 1
+    coreRequest: "1"
+    coreLimit: "2"
+    # Maior que o bronze_silver de propósito: cada tabela lê a Silver INTEIRA de N buckets e faz
+    # um shuffle de dedup antes do merge. Comece por aqui e ajuste pelo tempo real observado.
+    instances: 3
+    memory: "8g"
+    labels:
+      app.kubernetes.io/name: spark-lakatos
+      app.kubernetes.io/part-of: dtlk
+    env:
+      - name: PYTHONPATH
+        value: "/opt/spark/app/src/main"
+    envFrom:
+      - secretRef:
+          name: spark-secrets
+      - configMapRef:
+          name: spark-lakatos-config
+      - secretRef:
+          name: spark-lakatos-secret
+    volumeMounts:
+      - name: spark-local-dir-1
+        mountPath: /tmp/spark-local
+      - name: clickhouse-ca
+        mountPath: /etc/ssl/clickhouse
+        readOnly: true
+    tolerations:
+      - key: service-type
+        operator: Equal
+        value: high-memory
+        effect: NoSchedule

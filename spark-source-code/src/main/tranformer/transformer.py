@@ -1,12 +1,9 @@
+import logging
+
 import pyspark.sql.functions as F
 from tranformer.base import Transformer
-from pyspark.sql.avro.functions import from_avro
 from pyspark.sql import DataFrame
-from pyspark.sql.window import Window
-from functools import reduce
-from typing import List
-import logging
-from utils.handler_logger import initialize_logger, apply_and_trace_context
+from utils.handler_logger import initialize_logger
 
 # init global logger
 logger_base = initialize_logger()
@@ -36,17 +33,17 @@ class HardBusinessRulesTransformerAuto(Transformer):
     inválidas corrompam os Hubs e Satélites do Data Vault.
     """
 
-    def __init__(self, config_application: dict, config_params: dict) -> None:
+    def __init__(self, environment_parameters: dict, runtime_parameters: dict) -> None:
         """
         Inicializa o transformador com base nas chaves de negócio configuradas.
 
         Args:
-            config_application (dict): Configurações globais da aplicação.
-            config_params (dict): Parâmetros contendo 'chave_pk' (lista de colunas da PK).
+            environment_parameters (dict): Configurações globais da aplicação.
+            runtime_parameters (dict): Parâmetros contendo 'primary_key' (lista de colunas da PK).
         """
         self.logger = initialize_logger()
 
-        self.business_key = config_params.get("chave_pk", [])
+        self.business_key = runtime_parameters.get("primary_key", [])
         self.logger.debug(f"pipeline_orchestrator HardBusinessRulesTransformerAuto inicializado.")
         self.logger.debug(f"[DEBUG] Business Keys configuradas: {self.business_key}")
 
@@ -61,8 +58,8 @@ class HardBusinessRulesTransformerAuto(Transformer):
             DataFrame: DataFrame com a coluna booleana 'quarentena' adicionada.
         """
         if not self.business_key:
-            self.logger.error("[ERROR] Nenhuma Business Key (chave_pk) foi definida nas configurações.")
-            raise ValueError("A chave_pk não pode estar vazia para esta transformação.")
+            self.logger.error("[ERROR] Nenhuma Business Key (primary_key) foi definida nas configurações.")
+            raise ValueError("A primary_key não pode estar vazia para esta transformação.")
 
         self.logger.debug(f"pipeline_orchestrator Iniciando validação de Hard Rules (Quarentena) em {len(self.business_key)} colunas.")
         
@@ -81,14 +78,16 @@ class HardBusinessRulesTransformerAuto(Transformer):
                 F.when(condicao_quarentena, F.lit(True)).otherwise(F.lit(False))
             )
 
-            # Debug de Volumetria (Opcional, mas recomendado para Data Quality)
-            # Nota: Isso causa um Job Spark. Em produção massiva, avalie se deve ser DEBUG ou debug.
-            quarentena_count = data_with_quarantine.filter(F.col("quarentena") == True).count()
-            
-            if quarentena_count > 0:
-                self.logger.debug(f"pipeline_orchestrator Validação concluída: {quarentena_count} registros marcados para QUARENTENA.")
-            else:
-                self.logger.debug(f"pipeline_orchestrator Validação concluída: Nenhum registro inválido detectado.")
+            # Debug de Volumetria (Data Quality). O count() dispara um Job Spark COMPLETO —
+            # com N tabelas por pod isso vira N jobs so para uma mensagem de log. Por isso so
+            # roda quando o nivel DEBUG esta de fato habilitado.
+            if self.logger.isEnabledFor(logging.DEBUG):
+                quarentena_count = data_with_quarantine.filter(F.col("quarentena") == True).count()
+
+                if quarentena_count > 0:
+                    self.logger.debug(f"pipeline_orchestrator Validação concluída: {quarentena_count} registros marcados para QUARENTENA.")
+                else:
+                    self.logger.debug(f"pipeline_orchestrator Validação concluída: Nenhum registro inválido detectado.")
 
             return data_with_quarantine
 
@@ -105,19 +104,19 @@ class RawDataVaultInitTransformerAuto(Transformer):
     e o sistema de origem, garantindo a unicidade e integridade no Data Vault.
     """
 
-    def __init__(self, config_application: dict, config_params: dict):
+    def __init__(self, environment_parameters: dict, runtime_parameters: dict):
         """
         Inicializa o transformador configurando a origem e as chaves de negócio.
 
         Args:
-            config_application (dict): Configurações globais (contém mapeamento de unidades).
-            config_params (dict): Parâmetros da tabela (contém chave_pk e config_name).
+            environment_parameters (dict): Configurações globais (contém mapeamento de unidades).
+            runtime_parameters (dict): Parâmetros da tabela (contém primary_key e config_name).
         """
         self.logger = initialize_logger() 
         
-        unit_name = config_params["config_name"]
+        unit_name = runtime_parameters["filial_name"]
         self.source_system = f"data-bee_{unit_name}"
-        self.business_key = config_params.get("chave_pk", [])
+        self.business_key = runtime_parameters.get("primary_key", [])
         
         self.logger.debug(f"Pipeline_orchestrator RawDataVaultInitTransformerAuto inicializado para a unidade: {unit_name}")
         self.logger.debug(f"Source System definido: {self.source_system}")
@@ -143,7 +142,7 @@ class RawDataVaultInitTransformerAuto(Transformer):
         self.logger.debug(f"Iniciando geração de metadados Raw Vault.")
         
         if not self.business_key:
-            self.logger.error(" Impossível gerar Hash Key: 'chave_pk' não configurada.")
+            self.logger.error(" Impossível gerar Hash Key: 'primary_key' não configurada.")
             raise ValueError("A lista de business_key está vazia.")
 
         try:

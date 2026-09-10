@@ -1,9 +1,10 @@
 {
   "filiais": ["filial_01", "filial_02"],
   "tables": [
-    { "name": "andon_peso",       "chave_pk": ["andon_peso_id"] },
-    { "name": "ordem_producao",   "chave_pk": ["ordem_producao_id"] },
-    { "name": "unidade_producao", "chave_pk": ["unidade_producao_id"] }
+    { "name": "dw_andon_peso",       "chave_pk": ["id", "unidade_origem", "dataset_origem"] },
+    { "name": "dw_ordem_producao",   "chave_pk": ["id", "unidade_origem", "dataset_origem"] },
+    { "name": "dw_unidade_producao", "chave_pk": ["id", "unidade_origem", "dataset_origem"] },
+    { "name": "dw_material",         "chave_pk": ["id", "unidade_origem", "dataset_origem"] }
   ],
   "schedule_interval": null,
   "honeycomb_version": "poc"

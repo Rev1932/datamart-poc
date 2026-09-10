@@ -1,0 +1,42 @@
+# ================================================================
+# CI — Validação básica
+# ================================================================
+#
+# Gatilho: PR aberta/atualizada para main ou dev
+#
+# Checks:
+#   • Sintaxe Python em src/main/ — no MESMO Python da imagem de runtime
+#   • Estrutura válida de .github/config/clients.yml (se existir)
+# ================================================================
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev, uat]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tem que casar com o Python da imagem (apache/spark:3.5.8-java17-python3 = 3.10).
+      # O runner traz 3.12 por padrão, que aceita PEP 701 (aspas aninhadas em f-string) e
+      # deixava passar código que estoura SyntaxError no pod.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Sintaxe Python (3.10 — igual à imagem)
+        run: find src/main -name "*.py" -print0 | xargs -0 -r python3 -m py_compile
+
+      - name: Validar clients.yml
+        run: |
+          if [ -f .github/config/clients.yml ]; then
+            python3 -c "import yaml; yaml.safe_load(open('.github/config/clients.yml'))"
+          else
+            echo "::notice::.github/config/clients.yml ausente — validação ignorada"
+          fi

@@ -1,1 +1,5 @@
-application-local.conf
+# Confs de ambiente local carregam credenciais em texto plano — nunca versionar.
+# O glob cobre as variantes (-remoto, etc.). No cluster a config não vem mais de
+# .conf: o ConfigManager lê tudo de variáveis de ambiente (ConfigMap + Secret via
+# envFrom). Ver .env.example para o contrato de env vars.
+application-local*.conf

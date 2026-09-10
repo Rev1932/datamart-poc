@@ -12,7 +12,7 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 9 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido.
+**Progresso:** 13 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1, T2.2, T2.3 e T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda.
 
 Execução dos testes registrada em [TESTES.md](TESTES.md) — 60 testes, **1 defeito aberto**:
 [D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup), sem correção possível e mitigado.
@@ -26,7 +26,7 @@ D14 e D15, achados nesta rodada, foram corrigidos e verificados.
 |---|---|---|
 | **M0 — Especificação fechada** | E0 inteiro | ✅ |
 | **M1 — Stack de pé** | Checklist Go/No-Go de [E1](epicos/E1-infraestrutura.md) — **9 de 9** | ✅ |
-| **M2 — Dado fluindo** | Um trigger no Airflow carrega os dois braços pelo Dataset | ⬜ |
+| **M2 — Dado fluindo** | Um trigger no Airflow carrega os dois braços, na mesma janela | ⬜ |
 | **M3 — Dado íntegro** | `compare-counts.sh` com `delta = 0` em toda linha | ⬜ |
 | **M4 — Evidência pronta** | `benchmark/results/RESULTADO.md` com as 8 seções | ⬜ |
 
@@ -96,8 +96,8 @@ Aceite: o smoke do connector chega a `COMPLETED` —
 [T-E1-32](TESTES.md#47-t13--spark-operator-e-imagem-honeycomb)
 
 - [x] Chart `spark-operator` 2.5.2 e `operator-values.yaml`
-- [x] `images/spark/Dockerfile` — overlay sobre `hub.datawake.cloud/dw-dados/honeycomb:latest`,
-      **sem reconstruir o honeycomb**
+- [x] `images/spark/Dockerfile` — overlay sobre `honeycomb:3.3.0-local`, **sem reconstruir o app**.
+      Revisado em 2026-09-10: era overlay do `:latest` do registry, que não publica a 3.3.0
 - [x] Jars do connector ClickHouse (custo: 20 MB sobre a base)
 - [x] `infra/spark/smoke/smoke_clickhouse.py` e `sparkapplication-smoke-clickhouse.yaml`
 - [x] `infra/spark/spark-secrets.yaml` com `DATAMART_CH_*` (corrige **D2**)
@@ -224,51 +224,112 @@ teto de 768Mi que eu havia apertado ficava abaixo do necessário com qualquer co
 
 ## Épico 2 — Execução → [especificação](epicos/E2-execucao.md)
 
-### ⬜ T2.1 — Re-sync com `honeycomb@main` → [ADR-001](decisoes/ADR-001-resync-honeycomb.md)
-Aceite: `pytest -q` passa **sem alteração** após o rsync
+**Replanejado em 2026-09-09 (spec v3.0).** A cadeia vai da **silver direto para os datamarts**: saem o
+passo bronze → silver e a materialização da gold no Delta (feature futura, fora do escopo da POC). Sobram
+2 passos Spark, e o fork já está desenhado assim — `PipelineGoldClickHouse` herda `read()`/`transform()`
+de `PipelineGold` e troca só o `save()`.
 
-- [ ] `rsync` de `honeycomb@main` sobre `spark-source-code/`
-- [ ] Preservar `utils/clickhouse_connection.py`
-- [ ] `DATAMART_CH_*` no `_ENV_SCHEMA` (corrige **D2**)
+Sem gold materializada, a comparabilidade dos dois braços deixa de ser estrutural e passa a depender da
+**janela explícita** (T2.2) mais a silver parada durante a DAG. Por isso T2.2 vira a task mais importante
+do épico, e as duas cargas vivem numa DAG só, no mesmo DagRun.
 
-### ⬜ T2.2 — Janela de carga (corrige **D1**) → [ADR-004](decisoes/ADR-004-janela-de-carga.md)
-Aceite: recarregar a mesma janela duas vezes **não muda** a contagem da partição
+Ordem de execução: T2.1 → T2.5 → T2.2 → T2.3 ∥ T2.4 → T2.6. **T2.7 não existe na v3.0.**
 
-- [ ] `JANELA_INICIO`/`JANELA_FIM` em `queryutils.build_query`
-- [ ] Substituir `INTERVAL 10 DAYS` em `fact_200_cep.sql:44`
-- [ ] Guarda de cobertura integral antes da troca
+### ✅ Contrato da silver — fechado em 2026-09-09
+Decisão: **a seed se adequa ao prefixo**. `airflow/mongo-seed/` corrigido em três frentes, todas lidas dos
+predicados de join de `fact_200_cep.sql`:
 
-### ⬜ T2.3 — Repositório ClickHouse → [ADR-002](decisoes/ADR-002-modelagem-clickhouse.md)
-Aceite: `pytest -m integration ...clickhouse.py -q` → `passed`, incluindo recarga
+- [x] 4 tabelas com prefixo `dw_`, incluindo `dw_material`
+- [x] `chave_pk` da silver = `id`, `unidade_origem`, `dataset_origem` — os aliases `<tabela>_id` são da gold
+- [x] `chave_pk` da gold = `filial`, `banco`, `andon_peso_id`
 
-- [ ] `utils/clickhouse_datamart.py` (cliente HTTP)
-- [ ] `RepositoryGoldDatamartClickhouse` com a sequência de troca de partição
-- [ ] `PipelineGoldDatamartClickhouse` + chave na factory
-- [ ] `ddl/clickhouse/01_fact_200_cep.sql`
-- [ ] Teste de integração com testcontainers
+A chave curta da gold **perdia linha em silêncio**: `dap.id` repete entre filiais, o `hk_business_id`
+colidia e o `ReplacingMergeTree` colapsava o par. Era o modo de falha dominante do épico.
+
+### ✅ T2.1 — Re-sync com honeycomb **3.3.0** → [ADR-001](decisoes/ADR-001-resync-honeycomb.md)
+Aceite: **173 passed, 28 deselected** — idêntico à tag pura, logo o rsync não introduziu nada
+
+- [x] `rsync` da tag `3.3.0` (`a5f2fa4`) sobre `spark-source-code/`, extraída por `git archive`
+- [x] Preservar `utils/clickhouse_connection.py`
+- [x] `DATAMART_CH_*` no `_ENV_SCHEMA` (corrige **D2**)
+
+**Não é `main`.** O `origin/main` (`b0d7472`) reescreveu `fact_200_cep.sql` como `UNION ALL` de 8 tabelas
+silver mais a gold `dim_limites`, e removeu o filtro temporal. A 3.3.0 é a última tag em que a query bate
+com o dado ingerido e com o desenho do épico.
+
+**A imagem passou a carregar esse código em 2026-09-10.** Até então `honeycomb:poc` era overlay do
+`:latest` do registry — sem `datamart_ch` na factory e com o `INTERVAL 10 DAYS` na query. O registry não
+publica a 3.3.0 (só `3.9.0`..`3.9.10`), então a base sai do `Dockerfile` da própria release, que veio no
+rsync e é auto-contido. Junto foi corrigido o `minikube image load`, **no-op silencioso** quando a tag já
+existe no nó — [incidente #12](TROUBLESHOOTING.md#12-minikube-image-load-nao-substitui-tag-existente).
+
+### ✅ T2.5 — Contrato de entrada da silver
+**Não é task de código.** O usuário ingere as tabelas silver já em Delta, de fora do repositório. Aqui só
+fica declarado o que o resto do épico precisa encontrar.
+
+Aceite: conferido em 2026-09-10 lendo o `schemaString` do `metaData` de cada checkpoint Delta
+
+- [x] 4 tabelas Delta em `s3a://datamart/business_datavault_data-bee/<tabela>/`, nomes `dw_` do contrato
+- [x] Cada uma com `id`, `unidade_origem`, `dataset_origem` — os `INNER JOIN` da query casam por elas
+- [x] Uma tabela por nome, com todas as filiais dentro: a discriminação é por coluna, não por caminho
+
+`real` e os dois limites vêm como `decimal(5,1)`, o que confirma o `Decimal(9,3)` da DDL do ClickHouse.
+
+`unidade_origem` e `dataset_origem` são colunas do dado, não do caminho. Ausentes, o job morre em
+`UNRESOLVED_COLUMN`.
+
+### ✅ T2.2 — Janela de carga (corrige **D1**) → [ADR-004](decisoes/ADR-004-janela-de-carga.md)
+Aceite: as 2 queries parseiam no Spark com a janela substituída, e o build **recusa** sem o parâmetro
+
+- [x] `JANELA_INICIO`/`JANELA_FIM` em `queryutils.build_query`, vindos de `runtime_parameters`
+- [x] `--janela_inicio`/`--janela_fim` em `main.py`, campos em `PipelineConfig`
+- [x] `INTERVAL 10 DAYS` substituído por predicado fechado à esquerda e aberto à direita
+- [x] Guarda de cobertura integral antes da troca de partição (em T2.3)
+- [x] Abortar quando o parâmetro faltar — **nunca** cair de volta para `current_timestamp()`
+- [x] 6 testes unitários novos, mais o de contrato passando a exigir a janela
+
+A recusa é por varredura do texto **após** a substituição: query sem placeholder segue intacta, query com
+placeholder e sem valor aborta nomeando qual faltou.
+
+### ✅ T2.3 — Braço ClickHouse → [ADR-002](decisoes/ADR-002-modelagem-clickhouse.md)
+Aceite: **5 passed** contra o ClickHouse real, com o usuário `u_acme_loader` — valida o RBAC junto
+
+- [x] `utils/clickhouse_datamart.py` — cliente HTTP para DDL e troca de partição
+- [x] `RepositoryDatamartClickhouse`: `read`/`transform` iguais aos de `RepositoryGoldDatamart`, só `write` difere
+- [x] `PipelineDatamartClickhouse` + chave `datamart_ch` na factory
+- [x] `ddl/clickhouse/01_fact_200_cep.sql`, aplicada em `dm_acme` e `dm_globex`
+- [x] 5 testes de integração: sequência completa, recarga, e as 3 guardas
+
+Sem testcontainers: o pacote não está no `requirements.txt` da 3.3.0 e há um ClickHouse de pé. Os testes
+pulam sozinhos quando `DATAMART_CH_*` não está no ambiente.
+
+`load_dts` é `current_timestamp()` avaliado em cada braço: os dois destinos terão valores diferentes
+nessa coluna **por construção**. Comparação linha a linha no E3 precisa excluí-la.
 
 ### ⬜ T2.4 — Braço Postgres e simetria experimental
 Aceite: o diff entre os dois repositórios toca **exclusivamente** `write()`
 
-- [ ] Extrair `read()`/`transform()` para base comum
+Desbloqueada em 2026-09-10: `dm_acme` e `dm_globex` existem. O `bootstrap.sh` não chamava o
+`infra/postgres/job-init.yaml`, que já estava pronto desde T1.4. Não falta DDL de tabela — o
+`RepositoryGoldDatamart.write()` cria staging e alvo por conta própria.
+
+- [ ] Confirmar que os dois braços herdam `read()`/`transform()` de `PipelineGold`
 - [ ] `.na.drop` no `transform` compartilhado
-- [ ] `DECIMAL(18,4)` em vez de `DOUBLE`, nos dois braços
+- [ ] `DECIMAL(9,3)` em vez de `DOUBLE`, na query — um único lugar possível. Origem é `Decimal(5,1)`
+- [ ] Chave `datamart_pg` na factory
 
-### ⬜ T2.5 — Carga bronze
-Aceite: `bash scripts/load-bronze.sh --validate` passa com o dado real
+### ⬜ T2.6 — DAG
+Aceite: um trigger na DAG carrega os dois destinos, com a mesma contagem na partição
 
-- [ ] `load-bronze.sh` substitui `seed-bronze.sh`
-- [ ] Modo `--validate` que falha nomeando o caminho ausente
-- [ ] Destino derivado do documento Mongo
+- [ ] `k8s_<tenant>_datamart.py` — duas tasks, **em sequência**
+- [ ] 2 manifestos com placeholders `TENANT`/`VERSION`
+- [ ] `JANELA_INICIO`/`JANELA_FIM` do `data_interval` do DagRun
 
-### ⬜ T2.6 — DAGs
-Aceite: um trigger no `bronze_silver` dispara as duas DAGs gold pelo Dataset
+Uma DAG, não duas encadeadas por Dataset: sem gold materializada não há produtor, e o mesmo DagRun é o
+que garante janela idêntica nos dois braços. Em sequência porque dois drivers Spark não cabem no nó.
 
-- [ ] `k8s_<tenant>_bronze_silver.py`
-- [ ] `k8s_<tenant>_gold_datamart_pg.py`
-- [ ] `k8s_<tenant>_gold_datamart_ch.py`
-- [ ] 3 manifestos com placeholders `TENANT`/`VERSION`
-- [ ] Preservar `outlets` na task não-mapeada e `max_active_tis_per_dag=1`
+Saem: a DAG de `bronze_silver`, a DAG de gold, o Dataset e os `outlets`, o `expand_kwargs` por filial e o
+`max_active_tis_per_dag=1`.
 
 ---
 
@@ -322,10 +383,7 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 
 ### Abertas
 
-| # | O quê | Bloqueia |
-|---|---|---|
-| 1 | **Carregar os Parquet reais.** `bash scripts/minio-ui.sh` imprime a URL do console, as credenciais e os caminhos exatos derivados do control plane | T2.5, e por consequência **todo o E3** |
-| 2 | *(nenhuma além da carga)* | — |
+Nenhuma.
 
 ### Encerradas
 
@@ -336,4 +394,5 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 | 5 | Nomes de `filial` no seed do Mongo | **Não é decisão da POC**: é contrato de arquitetura entre os serviços. `scripts/minio-ui.sh` deriva e imprime os caminhos a partir do control plane, em vez de pedir que alguém os reconcilie na mão |
 | 6 | `TRUNCATE` dos system logs acumulados | **Dispensável.** Medido: 11,67 MiB em disco num PVC com 819 GiB livres, e as seis tabelas estão **congeladas** (verificado por amostragem — [T-E1-38](TESTES.md#411-verificações-de-encerramento-do-épico)). O risco era de memória em merge, e esse já foi eliminado |
 | 7 | CRD do Spark Operator na 2.5.0 com chart 2.5.2 | **Sem risco.** Diff dos três CRD instalados contra os do chart 2.5.2: **zero linhas divergentes** ([T-E1-39](TESTES.md#411-verificações-de-encerramento-do-épico)) |
+| 1 | Ingerir as 4 tabelas silver em Delta | **Feito** em 2026-09-10. Contrato conferido coluna a coluna — T2.5 |
 | 8 | Terceiro braço `pg-tuned` | **Entra.** Schema `gold_tuned`, entregue e medido — [T-E1-41](TESTES.md#412-t14-complemento--o-braço-pg-tuned) |

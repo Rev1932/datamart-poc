@@ -1,0 +1,21 @@
+# ATENCAO: padroes do .dockerignore NAO sao recursivos como no .gitignore — `__pycache__/`
+# casaria so na raiz do contexto. Use `**/` para alcancar subdiretorios.
+
+# Bytecode do host: os .pyc sao de outra versao do Python (o dev roda 3.12, a imagem roda 3.10)
+# e ficavam embutidos na imagem como lixo obsoleto.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Nada disso e usado em runtime pelo job
+.git
+.github
+tests
+docs
+k8s
+**/*.md
+
+# Segredos locais nunca entram na imagem
+**/.env
+resources/*.env

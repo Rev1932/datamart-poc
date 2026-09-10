@@ -1,0 +1,49 @@
+# ConfigMap — valores NÃO-secretos consumidos pelo ConfigManager (_ENV_SCHEMA).
+# Espelha a parte não-secreta de resources/.env.example. Segredos ficam no Secret.
+# Ajuste `namespace` e os valores conforme o ambiente (dev/uat/prod).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-unipac-config
+  namespace: dw-dados
+  labels:
+    app.kubernetes.io/name: spark-unipac
+data:
+  # --- MinIO / S3 ---
+  # Endpoint da plataforma: e onde as credenciais S3A do secret `spark-secrets`
+  # (usuario dw-app-spark-k8s) sao validas. Mesmo host usado por Trino e Hive Metastore.
+  MINIO_BASE_PATH: "s3a://datawake-unipac"
+  SPARK_S3_ENDPOINT: "https://minio.datawake.cloud:9000"
+
+  # --- Postgres (datamart gold) ---
+  POSTGRES_HOST: "dw-prd-postgres.dw-sql.svc.local-k8s.datawake.cloud"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DATABASE: "unipac_dw"
+  POSTGRES_SCHEMA: "public"
+
+  # --- Trino (só para pipelines gold/bronze_silver; gold_datamart não usa) ---
+  # Host/porta: TLS terminado no Traefik. O endpoint antigo trino.datawake.cloud:48085
+  # (HTTPS direto do Compose) foi descontinuado — ver dtlk-trinodb/README.md.
+  # Catálogo: os catálogos por tenant foram consolidados no catálogo unificado
+  # `delta_lake`; o isolamento passou a ser por SCHEMA.
+  TRINO_TYPE_AUTH: "basic"
+  TRINO_HOST: "trinodb2.datawake.cloud"
+  TRINO_PORT: "443"
+  TRINO_CATALOG: "delta_lake"
+  TRINO_SCHEMA: "business"
+  TRINO_SCHEMA_FOLDER: "business_datavault_data-bee"
+  TRINO_SCHEMA_FOLDER_SILVER: "business_datavault_data-bee"
+  TRINO_SCHEMA_FOLDER_GOLD: "service_data_data-bee"
+  TRINO_VERIFY_SSL: "false"
+
+  # --- ClickHouse (logs de auditoria) ---
+  CLICKHOUSE_URL: "https://api-logs.datawake.cloud"
+  CLICKHOUSE_SERVICE_NAME: "unipac-pipeline"
+  # Caminho ABSOLUTO do certificado montado a partir do Secret `dtlk-clickhouse-ca`
+  # (ver o volume `clickhouse-ca` em sparkapplication.yaml) — mountPath + nome da chave do
+  # Secret precisam formar exatamente este caminho. O handler repassa caminhos absolutos
+  # direto para requests(verify=...); só nomes RELATIVOS sao resolvidos contra resources/
+  # (convencao antiga, de quando o cert vinha embutido na imagem).
+  # Alternativa: "true" verifica contra as CAs do sistema — suficiente se o endpoint usar
+  # uma CA publica, e dispensa o Secret e o volume.
+  CLICKHOUSE_VERIFY_SSL: "/etc/ssl/clickhouse/ca.crt"

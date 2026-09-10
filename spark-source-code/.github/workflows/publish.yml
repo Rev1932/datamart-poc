@@ -1,0 +1,204 @@
+# ================================================================
+# Publish — Build e push da imagem Docker
+# ================================================================
+#
+# Dois modos de acionamento:
+#
+#   1. workflow_call — encadeado pelo release.yml logo após o semantic-release criar
+#      uma versão. É o caminho normal: a imagem sai automaticamente a cada release,
+#      sempre na versão recém-criada.
+#
+#   2. workflow_dispatch — re-build manual de uma tag existente:
+#         gh workflow run publish.yml -f version=2.0.2
+#         gh workflow run publish.yml                  # vazio = última release
+#
+# O build/push usa `docker` puro (login → build → push), espelhando o processo manual
+# já validado contra o Harbor. Não usa docker/login-action nem build-push-action.
+#
+# ⚠️ O input `version` é a REF DO CHECKOUT, não só a tag da imagem. Apontar para uma
+# tag antiga builda o código daquela tag — por isso o sumário publica tag, commit e data.
+#
+# Imagem gerada:
+#   {REGISTRY_URL}/{REGISTRY_NAMESPACE}/{image_name}:{version}
+#   {REGISTRY_URL}/{REGISTRY_NAMESPACE}/{image_name}:latest
+#
+# Secrets necessários (Settings → Secrets → Actions → Repository secrets):
+#   REGISTRY_URL       → hostname do registry, SEM https:// e SEM barra final
+#                        (ex: hub.datawake.cloud)
+#   REGISTRY_NAMESPACE → projeto do Harbor (ex: dw-dados). O projeto precisa EXISTIR:
+#                        o Harbor cria repositórios sozinho, mas nunca projetos.
+#   REGISTRY_USERNAME  → usuário ou robô (ex: robot$dw-dados+automacao-dw-dados-pub)
+#   REGISTRY_PASSWORD  → senha, CLI Secret ou token do robô
+# ================================================================
+
+name: Publish — Build e Push de Imagem Docker
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Tag/ref a buildar"
+        required: true
+        type: string
+      image_name:
+        description: "Nome da imagem no registry (padrão: nome do repositório)"
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag a buildar (vazio = última release)"
+        required: false
+        default: ""
+      image_name:
+        description: "Nome da imagem no registry (padrão: nome do repositório)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build e push
+    runs-on: ubuntu-latest
+
+    steps:
+      # Sem este passo, um dispatch sem `version` faria checkout de ref vazio.
+      # Resolver para a release mais recente é o default seguro.
+      - name: Resolver a versão
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version=$(gh release view -R "$REPO" --json tagName -q .tagName)
+            echo "::notice::version não informado — usando a release mais recente: $version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (${{ steps.ver.outputs.version }})
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.version }}
+
+      # Torna visível QUAL commit está sendo buildado: buildar uma tag desatualizada
+      # era silencioso até aqui.
+      - name: Metadados do commit
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(git log -1 --format=%cI)"   >> "$GITHUB_OUTPUT"
+
+      # O GitHub mascara VALORES de secret no log, mas não comprimentos. Um `\n` ou
+      # espaço no fim do namespace autentica normalmente e devolve "project not found"
+      # no push — sintoma indistinguível de falta de permissão. Isto separa os dois casos.
+      - name: Diagnóstico — integridade das variáveis do registry
+        continue-on-error: true
+        env:
+          REGISTRY:  ${{ secrets.REGISTRY_URL }}
+          NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
+          REG_USER:  ${{ secrets.REGISTRY_USERNAME }}
+        run: |
+          echo "REGISTRY_URL       : ${#REGISTRY} caracteres"
+          echo "REGISTRY_NAMESPACE : ${#NAMESPACE} caracteres  (dw-dados = 8)"
+          echo "REGISTRY_USERNAME  : ${#REG_USER} caracteres"
+          case "$NAMESPACE" in
+            *[[:space:]]*) echo "::error::REGISTRY_NAMESPACE contém espaço ou quebra de linha — causa provável do 'project not found'." ;;
+          esac
+          case "$REGISTRY" in
+            https://*|http://*) echo "::error::REGISTRY_URL não pode incluir o esquema (https://)." ;;
+          esac
+          case "$REGISTRY" in
+            */) echo "::error::REGISTRY_URL não pode terminar com barra." ;;
+          esac
+
+      # Pergunta ao Harbor QUEM ele reconhece e O QUE concede, antes de gastar o build.
+      # `account: null` = credencial degradada para anônimo; `actions: []` = conta válida
+      # sem acesso ao projeto. Só o código HTTP e as claims são impressos, nunca o segredo.
+      - name: Diagnóstico — escopo concedido pelo registry
+        continue-on-error: true
+        env:
+          REGISTRY:   ${{ secrets.REGISTRY_URL }}
+          NAMESPACE:  ${{ secrets.REGISTRY_NAMESPACE }}
+          IMAGE_NAME: ${{ inputs.image_name || github.event.repository.name }}
+          REG_USER:   ${{ secrets.REGISTRY_USERNAME }}
+          REG_PASS:   ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          claims=$(curl -sS -u "${REG_USER}:${REG_PASS}" \
+              "https://${REGISTRY}/service/token?service=harbor-registry&scope=repository:${NAMESPACE}/${IMAGE_NAME}:push,pull" \
+            | jq -r '.token' | cut -d. -f2 \
+            | { read -r p; printf '%s==' "$p" | base64 -d 2>/dev/null; } \
+            | jq -c '{account: .sub, actions: [.access[]?.actions[]?]}') || claims='"indisponível"'
+          echo "::notice::Identidade e permissões no registry: ${claims}"
+
+      # Secrets entram por `env:` e são lidos como "$VAR". NUNCA interpolar
+      # ${{ secrets.X }} dentro do run: — o GitHub substitui o texto antes do bash
+      # executar, e um nome de robô Harbor (robot$dw-dados+...) teria o `$dw` expandido
+      # pelo shell, corrompendo o usuário silenciosamente.
+      - name: Login, build e push
+        env:
+          REGISTRY:   ${{ secrets.REGISTRY_URL }}
+          NAMESPACE:  ${{ secrets.REGISTRY_NAMESPACE }}
+          IMAGE_NAME: ${{ inputs.image_name || github.event.repository.name }}
+          TAG:        ${{ steps.ver.outputs.version }}
+          REG_USER:   ${{ secrets.REGISTRY_USERNAME }}
+          REG_PASS:   ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          FULL_IMAGE_NAME="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$TAG"
+          LATEST_IMAGE_NAME="$REGISTRY/$NAMESPACE/$IMAGE_NAME:latest"
+
+          echo "Efetuando login no registry $REGISTRY..."
+          if ! echo "$REG_PASS" | docker login "$REGISTRY" -u "$REG_USER" --password-stdin; then
+            echo "----------------------------------------------------------------------"
+            echo "ERRO: Falha na autenticação no registry $REGISTRY."
+            echo "Verifique REGISTRY_USERNAME e REGISTRY_PASSWORD. Para publicação use um"
+            echo "robô Harbor com pull+push no projeto (não expira e não passa pelo SSO)."
+            echo "----------------------------------------------------------------------"
+            exit 1
+          fi
+
+          echo "Build de $FULL_IMAGE_NAME..."
+          docker build -t "$FULL_IMAGE_NAME" -t "$LATEST_IMAGE_NAME" -f Dockerfile . --no-cache
+
+          echo "Push para o registry..."
+          docker push "$FULL_IMAGE_NAME"
+          docker push "$LATEST_IMAGE_NAME"
+
+          docker logout "$REGISTRY"
+          echo "Concluido: $FULL_IMAGE_NAME"
+
+      - name: Sumário do build
+        if: always()
+        env:
+          IMAGE_NAME:  ${{ inputs.image_name || github.event.repository.name }}
+          VERSION:     ${{ steps.ver.outputs.version }}
+          REGISTRY:    ${{ secrets.REGISTRY_URL }}
+          NAMESPACE:   ${{ secrets.REGISTRY_NAMESPACE }}
+          COMMIT_SHA:  ${{ steps.meta.outputs.sha }}
+          COMMIT_DATE: ${{ steps.meta.outputs.date }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          summary   = os.environ['GITHUB_STEP_SUMMARY']
+          image     = os.environ['IMAGE_NAME']
+          version   = os.environ['VERSION']
+          registry  = os.environ['REGISTRY']
+          namespace = os.environ['NAMESPACE']
+          full_path = f"{registry}/{namespace}/{image}" if namespace else f"{registry}/{image}"
+
+          with open(summary, 'a') as f:
+              f.write(f"## {image}\n\n")
+              f.write("| Campo | Valor |\n")
+              f.write("| :---- | :---- |\n")
+              f.write(f"| Imagem | `{full_path}:{version}` |\n")
+              f.write(f"| Latest | `{full_path}:latest` |\n")
+              f.write(f"| Tag buildada | `{version}` |\n")
+              f.write(f"| Commit | `{os.environ.get('COMMIT_SHA', '?')}` |\n")
+              f.write(f"| Data do commit | {os.environ.get('COMMIT_DATE', '?')} |\n")
+          PYEOF

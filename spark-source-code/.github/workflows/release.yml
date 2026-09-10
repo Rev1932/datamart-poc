@@ -1,0 +1,87 @@
+# ================================================================
+# Release — Versionamento automático com semantic-release
+# ================================================================
+#
+# Acionado a cada push na main. Analisa os commits desde a última
+# tag e determina se há uma nova versão a publicar.
+#
+# Tipos de commit e o bump que geram:
+#   feat:      → MINOR  (0.1.0 → 0.2.0)
+#   template:  → MINOR  (mudança no template base)
+#   fix:       → PATCH  (0.1.0 → 0.1.1)
+#   refactor:  → PATCH
+#   feat!:     → MAJOR  (0.1.0 → 1.0.0)
+#   chore/docs/ci: → nenhuma versão (ignorados)
+#
+# Commits que não seguem Conventional Commits são ignorados.
+# Se nenhum commit releaseável for encontrado, nenhuma versão
+# é criada e o job `publish` é pulado.
+#
+# ⚠️ O publish NÃO pode depender do evento `release: published`: o
+# semantic-release publica usando o GITHUB_TOKEN, e o GitHub não
+# dispara workflows a partir de eventos criados por esse token
+# (proteção contra recursão). Por isso o publish é chamado aqui
+# explicitamente, via workflow_call. Ver o histórico: o publish.yml
+# antigo, acionado por `release: published`, nunca executou.
+#
+# Configuração: .releaserc.json na raiz do repositório
+# ================================================================
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Publicar release
+    runs-on: ubuntu-latest
+    outputs:
+      # Vazio quando não houve commit releaseável — é o que decide se a imagem é buildada.
+      version: ${{ steps.semantic.outputs.version }}
+
+    steps:
+      - name: Checkout (histórico completo)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar semantic-release e plugins
+        run: |
+          npm install --global \
+            semantic-release \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator \
+            @semantic-release/github \
+            @semantic-release/exec \
+            conventional-changelog-conventionalcommits
+
+      # O plugin `exec` do .releaserc.json escreve `version=<nova>` no $GITHUB_OUTPUT
+      # deste passo — só executa quando há release, então a saída fica vazia caso
+      # contrário, e o job `publish` abaixo é pulado.
+      - name: Executar semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release
+
+  publish:
+    name: Publicar imagem
+    needs: release
+    if: needs.release.outputs.version != ''
+    uses: ./.github/workflows/publish.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
