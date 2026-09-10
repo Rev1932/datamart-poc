@@ -1,8 +1,36 @@
+import os
+
 import pytest
+
+
+def _postgres_do_ambiente():
+    """Aponta para um Postgres já de pé quando DATAMART_PG_HOST está no ambiente.
+
+    Sem isso a suíte exige testcontainers, que precisa de um daemon Docker — indisponível
+    dentro do cluster, onde o único Postgres real vive.
+
+    O banco apontado NÃO é descartado no fim: os testes assumem estado limpo, então use um
+    DATAMART_PG_SCHEMA novo a cada execução.
+    """
+    host = os.environ.get("DATAMART_PG_HOST")
+    if not host:
+        return None
+    return {
+        "host": host,
+        "port": int(os.environ.get("DATAMART_PG_PORT", "5432")),
+        "database": os.environ["DATAMART_PG_DATABASE"],
+        "user": os.environ["DATAMART_PG_USER"],
+        "password": os.environ["DATAMART_PG_PASSWORD"],
+        "schema": os.environ.get("DATAMART_PG_SCHEMA", "public"),
+    }
 
 
 @pytest.fixture(scope="session")
 def postgres_container():
+    if _postgres_do_ambiente():
+        yield None
+        return
+
     from testcontainers.postgres import PostgresContainer
 
     with PostgresContainer("postgres:16-alpine") as container:
@@ -11,6 +39,11 @@ def postgres_container():
 
 @pytest.fixture(scope="session")
 def config_postgres(postgres_container):
+    do_ambiente = _postgres_do_ambiente()
+    if do_ambiente:
+        _criar_schema(do_ambiente)
+        return do_ambiente
+
     return {
         "host": postgres_container.get_container_host_ip(),
         "port": int(postgres_container.get_exposed_port(5432)),
@@ -19,6 +52,19 @@ def config_postgres(postgres_container):
         "password": postgres_container.password,
         "schema": "public",
     }
+
+
+def _criar_schema(config):
+    import psycopg2
+
+    conexao = psycopg2.connect(
+        host=config["host"], port=config["port"], dbname=config["database"],
+        user=config["user"], password=config["password"])
+    try:
+        with conexao, conexao.cursor() as cursor:
+            cursor.execute(f'CREATE SCHEMA IF NOT EXISTS "{config["schema"]}"')
+    finally:
+        conexao.close()
 
 
 class FakeConfigApplication:
@@ -47,15 +93,21 @@ def make_repository(spark, config_postgres, tmp_path):
             "trino.schema_folder_gold": "gold",
         })
         params = PipelineConfig(
-            pipeline_type="gold_datamart",
-            config_name="teste",
+            pipeline="gold_datamart",
+            tenant_name="teste",
+            filial_name="teste",
             table_name=table_name,
-            topic=f"teste_{table_name}",
-            chave_pk=chave_pk,
+            primary_key=chave_pk,
         )
         return RepositoryGoldDatamart(spark, config_application, params, str(tmp_path))
 
     return _make
+
+
+@pytest.fixture
+def pg_schema(config_postgres):
+    """Schema onde o repositório grava — nem sempre `public` quando o Postgres é o do cluster."""
+    return config_postgres["schema"]
 
 
 @pytest.fixture

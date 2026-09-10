@@ -713,7 +713,6 @@ tem 4 tabelas e 3 casas. Detalhamento em [ADR-001](decisoes/ADR-001-resync-honey
 
 | Task | Bloqueado por |
 |---|---|
-| T2.4 — Braço Postgres | nada. `dm_acme`/`dm_globex` criados em 2026-09-10 |
 | T2.6 — DAG | nada |
 
 T2.5 (contrato de entrada) está satisfeito: as 4 tabelas silver foram ingeridas e verificadas.
@@ -726,8 +725,46 @@ Três bloqueios de ambiente foram levantados e fechados em 2026-09-10, nenhum de
 | `minikube image load` não substitui tag | Pod roda o código velho, **verde** | `docker save \| docker exec -i minikube docker load` — [incidente #12](TROUBLESHOOTING.md#12-minikube-image-load-nao-substitui-tag-existente) |
 | `job-init` do Postgres nunca invocado | `dm_acme`/`dm_globex` inexistentes | ConfigMap + Job no passo 8/12 do `bootstrap.sh` |
 
-O aceite de T2.4 e T2.6 continua dependendo de execução real: nenhum job Spark rodou contra a silver
-até aqui, e a junção das quatro tabelas nunca foi executada.
+### 5.5 T2.4 — braço Postgres e simetria
+
+| Verificação | Resultado |
+|---|---|
+| Suíte unitária | **190 passed, 34 deselected** (era 179) |
+| `RepositoryGoldDatamart` contra o Postgres real (`dm_acme`, schema próprio) | **6 passed** |
+| `RepositoryDatamartClickhouse` contra o ClickHouse real | **6 passed** |
+| Queries no parser real do Spark, com `DECIMAL(9,3)` | ambas parseiam; `build_query` recusa sem janela |
+
+A simetria virou asserção executável: `read` e `transform` são o **mesmo objeto de função** nos dois
+braços, e só `write` difere. Uma cópia colada que divergisse depois passaria numa conferência de olho e
+falha nesse assert.
+
+O sexto caso do ClickHouse é novo e cobre a razão de a limpeza existir: `timestamp` nulo — que
+`to_timestamp(substring(...))` devolve em string malformada — é descartado pelo `transform`
+compartilhado, e a troca de partição aceita a carga. Sem isso o destino recusa: `timestamp` é coluna de
+partição e de ordenação, e não pode ser `Nullable`.
+
+#### D14 — o fixture do braço Postgres estava quebrado desde antes da 3.3.0
+
+**Severidade: média. Cobertura ausente sem sinal.**
+
+`tests/integration/conftest.py` construía `PipelineConfig` com `pipeline_type`, `config_name`, `topic` e
+`chave_pk` — nomes de uma versão anterior da dataclass. Todo teste do braço Postgres erra no setup com
+`TypeError: unexpected keyword argument 'pipeline_type'`.
+
+Não aparecia porque `addopts = -m "not integration"` deselecionava os 6, e um teste deselecionado não é
+um teste falhando: a suíte fica verde. Era a única cobertura de `RepositoryGoldDatamart.write()`.
+
+**Correção:** campos atualizados, mais duas mudanças para que a suíte possa rodar onde existe um
+Postgres real — `DATAMART_PG_*` no ambiente dispensa o testcontainers (que exige daemon Docker,
+indisponível dentro do cluster), e as consultas passaram a usar o schema do fixture em vez de `public`
+fixo. O fixture `spark` só pede o driver JDBC por `spark.jars.packages` quando o jar não está no
+classpath: resolver por ivy exige rede, e a imagem já traz o jar.
+
+### 5.6 O que continua sem cobertura
+
+O aceite de T2.6 depende de execução real: nenhum job Spark rodou contra a silver até aqui, e a junção
+das quatro tabelas nunca foi executada. Os testes de integração usam DataFrame sintético — provam a
+gravação em cada destino, não a query.
 
 ## 6. Épico 3 — Validação
 

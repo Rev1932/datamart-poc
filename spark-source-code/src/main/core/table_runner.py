@@ -73,7 +73,12 @@ def normalize_tables(tables: Any) -> list[dict]:
             raise ValueError(f"Tabela {nome!r} duplicada em --tables_json.")
         vistas.add(nome)
 
-        normalizadas.append({"name": nome, "chave_pk": pk})
+        obrigatorias = item.get("colunas_obrigatorias") or []
+        if not isinstance(obrigatorias, list):
+            obrigatorias = [str(obrigatorias)]
+        obrigatorias = [str(c).strip() for c in obrigatorias if str(c).strip()]
+
+        normalizadas.append({"name": nome, "chave_pk": pk, "colunas_obrigatorias": obrigatorias})
 
     return normalizadas
 
@@ -150,6 +155,9 @@ class TableRunner:
                 self.base_config,
                 table_name=nome,
                 primary_key=tabela["chave_pk"],
+                # O valor por tabela vence; sem ele, o da linha de comando vale para todas.
+                colunas_obrigatorias=(tabela["colunas_obrigatorias"]
+                                      or self.base_config.colunas_obrigatorias),
             )
 
             pipeline = self.factory.new_instance(

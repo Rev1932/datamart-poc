@@ -143,7 +143,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 | Coluna | Tipo | Motivo |
 |---|---|---|
 | `filial`, `banco`, `unidade_producao_nome`, `atributo_nome_pai`, `atributo_tipo`, `unidade_medida`, `nome_limite_*` | `LowCardinality(String)` | Poucos valores distintos; dicionarização corta disco e acelera `GROUP BY` |
-| `valor`, `valor_limite_superior`, `valor_limite_inferior` | `Decimal(9,3)` | A query hoje faz `CAST(... AS DOUBLE)`. Trocar para `Decimal` **nos dois braços**, senão o Postgres mapeia para `DOUBLE PRECISION` e a comparação numérica desalinha. Precisão 9 porque a origem é `Decimal(5,1)`, medida no Parquet real — cabe em `Decimal32` |
+| `valor`, `valor_limite_superior`, `valor_limite_inferior` | `Decimal(9,3)` | Vem de `CAST(... AS DECIMAL(9,3))` na query (T2.4): um lugar só, e o `get_type_sql` do Postgres traduz `DecimalType` para `NUMERIC(9,3)`. Com `DOUBLE` o Postgres receberia `DOUBLE PRECISION` e `sum(valor)` divergiria. Precisão 9 porque a origem é `Decimal(5,1)` — cabe em `Decimal32` |
 | `timestamp`, `filial`, `banco`, `unidade_producao_id` | **não** `Nullable` | Exigência do `PARTITION BY` e da chave de ordenação |
 | Demais colunas de negócio | `Nullable` só se o dado exigir | Cada coluna `Nullable` carrega uma coluna extra de máscara |
 

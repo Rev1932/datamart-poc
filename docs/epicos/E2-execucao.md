@@ -489,18 +489,28 @@ está registrado como risco em T2.6.
 
 ### Ações
 
-1. Confirmar que `PipelineDatamartPostgres` e `PipelineDatamartClickhouse` herdam de `PipelineGold` e
-   sobrescrevem **só** `save()`. Se algum precisar tocar `read()` ou `transform()`, a diferença sobe para
-   a base — nunca fica em um dos ramos.
-2. No `transform` compartilhado, acrescentar a limpeza:
+1. Extrair a base `RepositoryDatamart` com `read()` e `transform()`; `RepositoryGoldDatamart` e
+   `RepositoryDatamartClickhouse` herdam dela e sobrescrevem **só** `write()`. Se algum precisar tocar
+   `read()` ou `transform()`, a diferença sobe para a base — nunca fica em um dos ramos.
+
+   > **Não é `PipelineGold`, como a v3.0 previa.** Na 3.3.0 o braço Postgres é `RepositoryGoldDatamart`,
+   > um `Repository` próprio, e `PipelineGold` grava Delta. A herança certa fica no nível do repositório,
+   > que é onde `read`/`transform` de fato vivem.
+2. No `transform` compartilhado, acrescentar a limpeza, **dirigida por configuração**:
    ```python
-   .na.drop(subset=["timestamp", "filial", "banco", "unidade_producao_id"])
+   .na.drop(subset=self.colunas_obrigatorias)   # vazio = desligada
    ```
-   logando a contagem descartada.
+   logando a contagem descartada. A lista chega por `--colunas_obrigatorias`, por `--tables_json`
+   (`colunas_obrigatorias` por tabela) ou pela seed do Mongo.
+
+   > **Constante quebraria produção.** `["timestamp", "filial", "banco", "unidade_producao_id"]` é
+   > específico de `fact_200_cep`; fixá-la na classe faria `na.drop` estourar em toda tabela gold que
+   > não tenha essas colunas. Vazio é o default, então `gold_datamart` não muda de comportamento.
 3. Trocar `CAST(... AS DOUBLE)` por `DECIMAL(9,3)` na query — assim os **dois** braços recebem o tipo
    certo da origem, em vez de cada um converter por conta. Precisão 9 porque a origem é `Decimal(5,1)`,
    medida no Parquet real: cabe em `Decimal32` (4 bytes), enquanto 10 a 18 forçam `Decimal64` (8).
-4. Chave `datamart_pg` em `core/pipeline_factory.py`.
+4. Chave `datamart_pg` em `core/pipeline_factory.py`, apelido de `gold_datamart`: a DAG fica simétrica
+   com `datamart_ch` também no nome.
 
 ### Por que a limpeza precisa ser compartilhada
 
@@ -514,14 +524,34 @@ está registrado como risco em T2.6.
 ### Artefatos
 
 `src/main/repo/repository.py` (refatorado), `resources/queries/fact_200_cep.sql` (alterado),
-`src/main/core/pipeline_factory.py` (alterado).
+`src/main/core/pipeline_factory.py` (alterado), `src/main/utils/pipeline_config.py` (alterado),
+`src/main/main.py` (alterado), `src/main/core/table_runner.py` (alterado),
+`tests/unit/test_repository_datamart.py` (novo), `airflow/mongo-seed/k8s_<tenant>_gold.json` (alterado).
 
 ### Aceite
 
-```bash
-git diff --stat   # o diff entre os dois repositórios toca exclusivamente write()
+A simetria vira asserção executável, em vez de conferência de olho:
+
+```python
+assert RepositoryGoldDatamart.read      is RepositoryDatamart.read
+assert RepositoryGoldDatamart.transform is RepositoryDatamart.transform
+assert RepositoryDatamartClickhouse.read      is RepositoryDatamart.read
+assert RepositoryDatamartClickhouse.transform is RepositoryDatamart.transform
+assert RepositoryGoldDatamart.write is not RepositoryDatamartClickhouse.write
 ```
-Mais: `pytest -q` continua passando.
+
+**Cumprido em 2026-09-10:** 190 passed na unidade, 6 passed no Postgres real (`dm_acme`) e 6 passed no
+ClickHouse real. O sexto caso do ClickHouse é novo: `timestamp` nulo é descartado pelo `transform`
+compartilhado e a troca de partição aceita a carga.
+
+### Defeito encontrado no caminho
+
+`tests/integration/conftest.py` construía `PipelineConfig` com `pipeline_type`, `config_name`, `topic` e
+`chave_pk` — campos que não existem mais. Os 6 testes do braço Postgres erravam no **setup**, desde antes
+da 3.3.0, e `-m "not integration"` escondia isso. Eram a única cobertura do código que esta task
+refatora. Corrigidos, mais dois ajustes para poderem rodar contra um Postgres já de pé:
+`DATAMART_PG_*` no ambiente dispensa o testcontainers, e o fixture `spark` só pede o driver por
+`spark.jars.packages` quando o jar não está no classpath — resolver por ivy exige rede.
 
 ---
 

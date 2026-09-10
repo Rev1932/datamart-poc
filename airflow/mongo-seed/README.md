@@ -7,7 +7,7 @@ reaplicar o Job cria uma nova versão em vez de sobrescrever — o histórico fi
 | Coleção | Lida por | Campos obrigatórios |
 |---|---|---|
 | `k8s_<tenant>` | ninguém (contrato documental) | `tables[{name, chave_pk[]}]` — as tabelas **silver** que precisam existir |
-| `k8s_<tenant>_gold` | DAG `k8s_<tenant>_datamart` (tasks PG e CH) | `tables[{name, chave_pk[], gold_type}]`, `honeycomb_version` |
+| `k8s_<tenant>_gold` | DAG `k8s_<tenant>_datamart` (tasks PG e CH) | `tables[{name, chave_pk[], colunas_obrigatorias[], gold_type}]`, `honeycomb_version` |
 
 **Mudou em [E2 v3.0](../../docs/epicos/E2-execucao.md):** com bronze → silver e a gold em Delta fora do
 escopo, nenhuma DAG lê `k8s_<tenant>` — ele fica como declaração do contrato de entrada da silver.
@@ -31,6 +31,10 @@ predicados de join de `resources/queries/fact_200_cep.sql`:
 > mas a fato agrega várias (`filiais[]` tem duas por tenant). Com a chave curta, duas filiais com o mesmo
 > `id` produzem o mesmo `hk_business_id`, o `ReplacingMergeTree` colapsa o par e **uma das linhas some sem
 > erro**. `filial` e `banco` existem na gold exatamente por isso.
+
+`colunas_obrigatorias` entrou em [T2.4](../../docs/epicos/E2-execucao.md#t24--braço-postgres-e-simetria-experimental):
+é a lista em que nulo invalida a linha, e **precisa ser a mesma nos dois destinos** — se só um limpar, a
+diferença de contagem é atribuída ao motor no portão de corretude. Ausente, a limpeza fica desligada.
 
 **Aplicado ao cluster em 2026-09-10.** O Job re-executado insere uma nova versão de cada documento; as
 antigas ficam, e as DAGs leem a mais recente. Conferido: os quatro documentos no topo de cada coleção já

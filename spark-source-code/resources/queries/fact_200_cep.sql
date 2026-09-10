@@ -17,11 +17,11 @@ SELECT
         'yyyy-MM-dd HH:mm:ss.SSS'
     ) AS timestamp,
     'Peso SET' AS atributo_nome_pai,
-    CAST(dap.real AS DOUBLE) AS valor,
+    CAST(dap.real AS DECIMAL(9,3)) AS valor,
     'Peso MAX' AS nome_limite_superior,
     'Peso MIN' AS nome_limite_inferior,
-    CAST(dap.limite_superior AS DOUBLE) AS valor_limite_superior,
-    CAST(dap.limite_inferior AS DOUBLE) AS valor_limite_inferior,
+    CAST(dap.limite_superior AS DECIMAL(9,3)) AS valor_limite_superior,
+    CAST(dap.limite_inferior AS DECIMAL(9,3)) AS valor_limite_inferior,
     '' AS unidade_medida,
     '' AS atributo_tipo
 FROM delta.`MINIO_BASE_PATH/S3_PATH_SILVER/dw_andon_peso` dap
@@ -46,4 +46,4 @@ WHERE
         substring(dap.data_hora, 1, 23),
         'yyyy-MM-dd HH:mm:ss.SSS'
     ) < to_timestamp('JANELA_FIM')
-    AND CAST(dap.real AS DOUBLE) <> 0
+    AND CAST(dap.real AS DECIMAL(9,3)) <> 0

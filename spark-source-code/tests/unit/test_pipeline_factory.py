@@ -2,6 +2,7 @@ import pytest
 
 from core.pipeline_factory import (
     PipelineBronzeToSilverWrapper,
+    PipelineDatamartClickhouseWrapper,
     PipelineDeltaMaintenanceWrapper,
     PipelineFactory,
     PipelineGoldDatamartWrapper,
@@ -25,6 +26,8 @@ def _runtime_parameters(pipeline):
 @pytest.mark.parametrize("key,expected_class", [
     ("gold", PipelineGoldWrapper),
     ("gold_datamart", PipelineGoldDatamartWrapper),
+    ("datamart_pg", PipelineGoldDatamartWrapper),
+    ("datamart_ch", PipelineDatamartClickhouseWrapper),
     ("bronze_silver", PipelineBronzeToSilverWrapper),
     ("silver_super_tenant", PipelineSilverSuperTenantWrapper),
     ("delta_maintenance", PipelineDeltaMaintenanceWrapper),

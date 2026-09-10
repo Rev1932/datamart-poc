@@ -96,13 +96,11 @@ class RepositoryGoldDataVaults(Repository):
             delta_table.optimize().executeCompaction()
 
 
-class RepositoryGoldDatamart(Repository):
-    """
-    Repositório da camada gold com destino PostgreSQL (datamart).
+class RepositoryDatamart(Repository):
+    """Leitura e transformação comuns aos destinos do datamart.
 
-    Reproduz o padrão de merge do Delta por hk_business_id: o Spark carrega
-    uma tabela staging via JDBC e o banco executa o upsert set-based
-    (INSERT ... ON CONFLICT DO UPDATE), garantindo atomicidade no destino.
+    Cada destino herda daqui e sobrescreve apenas `write`: dois destinos que leiam ou
+    transformem diferente não são comparáveis entre si.
     """
     UNIQUE_KEY = "hk_business_id"
 
@@ -113,13 +111,7 @@ class RepositoryGoldDatamart(Repository):
         from utils.queryutils import QueryUtils
         self.query = QueryUtils.build_query(queries_dir, environment_parameters, self.table_name, runtime_parameters)
         self.primary_key = runtime_parameters.get("primary_key") or []
-
-        self.config_postgres = environment_parameters.get("postgres")
-        self.pg_schema = self.config_postgres.get("schema", "public")
-        self.jdbc_url = (
-            f"jdbc:postgresql://{self.config_postgres['host']}:{self.config_postgres.get('port', 5432)}"
-            f"/{self.config_postgres['database']}?reWriteBatchedInserts=true"
-        )
+        self.colunas_obrigatorias = runtime_parameters.get("colunas_obrigatorias") or []
 
     def read(self, **kwargs):
         """
@@ -138,14 +130,44 @@ class RepositoryGoldDatamart(Repository):
         #criando Hash e Data da carga
         microBatchDF = microBatchDF \
             .withColumn(
-                "hk_business_id",
+                self.UNIQUE_KEY,
                 F.sha2(F.concat_ws("_", *key_columns), 256)
             ).withColumn("load_dts", F.current_timestamp())
         return microBatchDF
 
     def transform(self, data, **kwargs):
-        transformed_data = data.dropDuplicates(["hk_business_id"])
-        return transformed_data
+        transformed_data = data.dropDuplicates([self.UNIQUE_KEY])
+        if not self.colunas_obrigatorias:
+            return transformed_data
+
+        # Se só um destino limpar, as contagens divergem e a diferença é atribuída ao motor.
+        antes = transformed_data.count()
+        limpo = transformed_data.na.drop(subset=self.colunas_obrigatorias)
+        descartadas = antes - limpo.count()
+        if descartadas:
+            self.logger.warning(
+                f"{descartadas} linha(s) descartada(s) por nulo em {self.colunas_obrigatorias}")
+        return limpo
+
+
+class RepositoryGoldDatamart(RepositoryDatamart):
+    """
+    Repositório da camada gold com destino PostgreSQL (datamart).
+
+    Reproduz o padrão de merge do Delta por hk_business_id: o Spark carrega
+    uma tabela staging via JDBC e o banco executa o upsert set-based
+    (INSERT ... ON CONFLICT DO UPDATE), garantindo atomicidade no destino.
+    """
+
+    def __init__(self, spark, environment_parameters, runtime_parameters, queries_dir: str):
+        super().__init__(spark, environment_parameters, runtime_parameters, queries_dir)
+
+        self.config_postgres = environment_parameters.get("postgres")
+        self.pg_schema = self.config_postgres.get("schema", "public")
+        self.jdbc_url = (
+            f"jdbc:postgresql://{self.config_postgres['host']}:{self.config_postgres.get('port', 5432)}"
+            f"/{self.config_postgres['database']}?reWriteBatchedInserts=true"
+        )
 
     def write(self, data, **kwargs):
         """
@@ -184,22 +206,14 @@ class RepositoryGoldDatamart(Repository):
             conn.execution_query(GeneratePostgresQueryUtils.get_drop_table(staging))
 
 
-class RepositoryDatamartClickhouse(Repository):
+class RepositoryDatamartClickhouse(RepositoryDatamart):
     """Repositorio da camada gold com destino ClickHouse.
 
-    `read` e `transform` sao os mesmos de RepositoryGoldDatamart, por construcao: a
-    comparacao do benchmark so vale se os dois bracos lerem e transformarem igual.
+    Grava por staging e troca de particao; `read` e `transform` vem da base.
     """
-    UNIQUE_KEY = "hk_business_id"
-    COLUNAS_OBRIGATORIAS = ["timestamp", "filial", "banco", "unidade_producao_id"]
 
     def __init__(self, spark, environment_parameters, runtime_parameters, queries_dir: str):
-        self.logger = initialize_logger()
-        super().__init__(spark)
-        self.table_name = runtime_parameters.get("table_name")
-        from utils.queryutils import QueryUtils
-        self.query = QueryUtils.build_query(queries_dir, environment_parameters, self.table_name, runtime_parameters)
-        self.primary_key = runtime_parameters.get("primary_key") or []
+        super().__init__(spark, environment_parameters, runtime_parameters, queries_dir)
         self.janela_inicio = runtime_parameters.get("janela_inicio")
 
         self.config_ch = environment_parameters.get("datamart_clickhouse")
@@ -207,27 +221,6 @@ class RepositoryDatamartClickhouse(Repository):
         self.database = self.config_ch["database"]
         from utils.clickhouse_datamart import ClickHouseDatamartClient
         self.cliente = ClickHouseDatamartClient(self.config_ch)
-
-    def read(self, **kwargs):
-        microBatchDF = self.spark.sql(self.query)
-
-        key_columns = [F.col(c).cast("string") for c in self.primary_key]
-        microBatchDF = microBatchDF \
-            .withColumn(
-                "hk_business_id",
-                F.sha2(F.concat_ws("_", *key_columns), 256)
-            ).withColumn("load_dts", F.current_timestamp())
-        return microBatchDF
-
-    def transform(self, data, **kwargs):
-        # As colunas de particao e de ordenacao nao podem ser Nullable no destino, e
-        # to_timestamp(substring(...)) devolve NULL em string malformada.
-        antes = data.count()
-        limpo = data.dropDuplicates(["hk_business_id"]).na.drop(subset=self.COLUNAS_OBRIGATORIAS)
-        descartadas = antes - limpo.count()
-        if descartadas:
-            self.logger.warning(f"{descartadas} linha(s) descartada(s) por nulo em {self.COLUNAS_OBRIGATORIAS}")
-        return limpo
 
     def _particoes(self, data) -> List[str]:
         linhas = data.select(F.date_format("timestamp", "yyyyMM").alias("p")).distinct().collect()

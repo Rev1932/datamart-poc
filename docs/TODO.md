@@ -12,7 +12,7 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 13 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1, T2.2, T2.3 e T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda.
+**Progresso:** 14 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1, T2.2, T2.3, T2.4 e T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda. Falta **T2.6**, a DAG.
 
 Execução dos testes registrada em [TESTES.md](TESTES.md) — 60 testes, **1 defeito aberto**:
 [D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup), sem correção possível e mitigado.
@@ -306,17 +306,29 @@ pulam sozinhos quando `DATAMART_CH_*` não está no ambiente.
 `load_dts` é `current_timestamp()` avaliado em cada braço: os dois destinos terão valores diferentes
 nessa coluna **por construção**. Comparação linha a linha no E3 precisa excluí-la.
 
-### ⬜ T2.4 — Braço Postgres e simetria experimental
-Aceite: o diff entre os dois repositórios toca **exclusivamente** `write()`
+### ✅ T2.4 — Braço Postgres e simetria experimental
+Aceite: `read` e `transform` são o **mesmo objeto de função** nos dois braços — asserção executável,
+não conferência de olho. **190 passed** na unidade, **6 passed** no Postgres real, **6 passed** no
+ClickHouse real
 
-Desbloqueada em 2026-09-10: `dm_acme` e `dm_globex` existem. O `bootstrap.sh` não chamava o
-`infra/postgres/job-init.yaml`, que já estava pronto desde T1.4. Não falta DDL de tabela — o
-`RepositoryGoldDatamart.write()` cria staging e alvo por conta própria.
+- [x] Base `RepositoryDatamart` com `read`/`transform`; os dois braços sobrescrevem só `write`
+- [x] `.na.drop` no `transform` compartilhado, dirigido por `colunas_obrigatorias`
+- [x] `DECIMAL(9,3)` em vez de `DOUBLE`, na query — os 4 casts, incluindo o do `WHERE`
+- [x] Chave `datamart_pg` na factory
+- [x] `colunas_obrigatorias` no `PipelineConfig`, no `main.py` e no `--tables_json`, mais a seed
 
-- [ ] Confirmar que os dois braços herdam `read()`/`transform()` de `PipelineGold`
-- [ ] `.na.drop` no `transform` compartilhado
-- [ ] `DECIMAL(9,3)` em vez de `DOUBLE`, na query — um único lugar possível. Origem é `Decimal(5,1)`
-- [ ] Chave `datamart_pg` na factory
+A herança não veio de `PipelineGold`, como a v3.0 previa: na 3.3.0 o braço Postgres é
+`RepositoryGoldDatamart`, um `Repository`, e `PipelineGold` grava Delta. A base nova fica no nível do
+repositório, que é onde `read`/`transform` de fato vivem.
+
+**A limpeza é configurável, não constante.** `["timestamp", "filial", "banco", "unidade_producao_id"]`
+é específico de `fact_200_cep`; fixá-la na classe quebraria toda tabela gold que não tenha essas
+colunas. Vazio é o default e desliga a limpeza, então `gold_datamart` em produção não muda.
+
+**Defeito encontrado no caminho:** `tests/integration/conftest.py` construía `PipelineConfig` com
+`pipeline_type`/`config_name`/`topic`/`chave_pk`, campos que não existem mais. Os 6 testes do braço
+Postgres erravam no setup **desde antes da 3.3.0** e ninguém viu, porque `-m "not integration"` os
+deselecionava. Corrigido e executados pela primeira vez.
 
 ### ⬜ T2.6 — DAG
 Aceite: um trigger na DAG carrega os dois destinos, com a mesma contagem na partição

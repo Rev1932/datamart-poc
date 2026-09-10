@@ -26,11 +26,11 @@ def _df(spark, rows):
     return spark.createDataFrame(data, schema=_schema())
 
 
-def test_primeira_carga_cria_alvo_com_unique_e_remove_staging(spark, make_repository, pg_query):
+def test_primeira_carga_cria_alvo_com_unique_e_remove_staging(spark, make_repository, pg_query, pg_schema):
     repository = make_repository("fact_carga", ["filial"])
     repository.write(_df(spark, [("k1", "A", "1.5"), ("k2", "B", "2.0"), ("k3", "C", "3.0")]))
 
-    assert pg_query('SELECT count(*) FROM "public"."fact_carga"')[0][0] == 3
+    assert pg_query(f'SELECT count(*) FROM "{pg_schema}"."fact_carga"')[0][0] == 3
 
     unique = pg_query(
         "SELECT 1 FROM information_schema.table_constraints "
@@ -42,37 +42,37 @@ def test_primeira_carga_cria_alvo_com_unique_e_remove_staging(spark, make_reposi
     assert not staging, "staging deveria ser removida ao final do merge"
 
 
-def test_reexecucao_com_mesmos_dados_e_idempotente(spark, make_repository, pg_query):
+def test_reexecucao_com_mesmos_dados_e_idempotente(spark, make_repository, pg_query, pg_schema):
     repository = make_repository("fact_idem", ["filial"])
     df = _df(spark, [("k1", "A", "1.5"), ("k2", "B", "2.0")])
 
     repository.write(df)
     repository.write(df)
 
-    assert pg_query('SELECT count(*) FROM "public"."fact_idem"')[0][0] == 2
+    assert pg_query(f'SELECT count(*) FROM "{pg_schema}"."fact_idem"')[0][0] == 2
 
 
-def test_mesma_chave_com_valor_novo_atualiza_sem_duplicar(spark, make_repository, pg_query):
+def test_mesma_chave_com_valor_novo_atualiza_sem_duplicar(spark, make_repository, pg_query, pg_schema):
     repository = make_repository("fact_upd", ["filial"])
     repository.write(_df(spark, [("k1", "A", "1.5"), ("k2", "B", "2.0")]))
     repository.write(_df(spark, [("k1", "A", "9.9")]))
 
-    assert pg_query('SELECT count(*) FROM "public"."fact_upd"')[0][0] == 2
+    assert pg_query(f'SELECT count(*) FROM "{pg_schema}"."fact_upd"')[0][0] == 2
     quantidade = pg_query(
-        "SELECT quantidade FROM \"public\".\"fact_upd\" WHERE hk_business_id = 'k1'")[0][0]
+        f'SELECT quantidade FROM "{pg_schema}"."fact_upd" WHERE hk_business_id = \'k1\'')[0][0]
     assert quantidade == Decimal("9.9")
 
 
-def test_staging_orfa_com_schema_antigo_nao_quebra_a_execucao(spark, make_repository, pg_query):
-    pg_query('CREATE TABLE "public"."stg_fact_orfa" ( "coluna_antiga" INT )')
+def test_staging_orfa_com_schema_antigo_nao_quebra_a_execucao(spark, make_repository, pg_query, pg_schema):
+    pg_query(f'CREATE TABLE "{pg_schema}"."stg_fact_orfa" ( "coluna_antiga" INT )')
 
     repository = make_repository("fact_orfa", ["filial"])
     repository.write(_df(spark, [("k1", "A", "1.5")]))
 
-    assert pg_query('SELECT count(*) FROM "public"."fact_orfa"')[0][0] == 1
+    assert pg_query(f'SELECT count(*) FROM "{pg_schema}"."fact_orfa"')[0][0] == 1
 
 
-def test_tipos_preservados_no_destino(spark, make_repository, pg_query):
+def test_tipos_preservados_no_destino(spark, make_repository, pg_query, pg_schema):
     repository = make_repository("fact_tipos", ["filial"])
     repository.write(_df(spark, [("k1", "A", "1234.5678")]))
 
@@ -87,24 +87,24 @@ def test_tipos_preservados_no_destino(spark, make_repository, pg_query):
     assert tipo_ts == "timestamp without time zone"
 
     quantidade, load_dts = pg_query(
-        'SELECT quantidade, load_dts FROM "public"."fact_tipos"')[0]
+        f'SELECT quantidade, load_dts FROM "{pg_schema}"."fact_tipos"')[0]
     assert quantidade == Decimal("1234.5678")
     assert load_dts == LOAD_TS
 
 
-def test_falha_no_merge_mantem_o_alvo_intacto(spark, make_repository, pg_query):
+def test_falha_no_merge_mantem_o_alvo_intacto(spark, make_repository, pg_query, pg_schema):
     # Alvo pré-existente sem a coluna "quantidade": o merge falha e a transação
     # não pode ter tocado nos dados já presentes.
     pg_query(
-        'CREATE TABLE "public"."fact_atomico" ('
+        f'CREATE TABLE "{pg_schema}"."fact_atomico" ('
         ' "hk_business_id" TEXT, "filial" TEXT, "load_dts" TIMESTAMP,'
         ' UNIQUE ("hk_business_id") )')
     pg_query(
-        'INSERT INTO "public"."fact_atomico" VALUES (\'seed\', \'Z\', now())')
+        f'INSERT INTO "{pg_schema}"."fact_atomico" VALUES (\'seed\', \'Z\', now())')
 
     repository = make_repository("fact_atomico", ["filial"])
     with pytest.raises(Exception):
         repository.write(_df(spark, [("k1", "A", "1.5")]))
 
-    rows = pg_query('SELECT hk_business_id, filial FROM "public"."fact_atomico"')
+    rows = pg_query(f'SELECT hk_business_id, filial FROM "{pg_schema}"."fact_atomico"')
     assert rows == [("seed", "Z")]

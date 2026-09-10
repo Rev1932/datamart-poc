@@ -1,6 +1,11 @@
 {
   "tables": [
-    { "name": "fact_200_cep", "chave_pk": ["filial", "banco", "andon_peso_id"], "gold_type": "fact_postgres" }
+    {
+      "name": "fact_200_cep",
+      "chave_pk": ["filial", "banco", "andon_peso_id"],
+      "colunas_obrigatorias": ["timestamp", "filial", "banco", "unidade_producao_id"],
+      "gold_type": "fact_postgres"
+    }
   ],
   "schedule_interval": null,
   "honeycomb_version": "poc"

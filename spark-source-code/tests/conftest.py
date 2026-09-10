@@ -80,18 +80,29 @@ for _name in _STUBBED_LIBS:
         _stubbed_roots.add(_name.split(".")[0])
 
 
+def _driver_jdbc_ja_no_classpath():
+    """Resolver por ivy exige rede e HOME gravavel; na imagem o jar ja esta assado."""
+    import glob
+    import os
+
+    spark_home = os.environ.get("SPARK_HOME", "/opt/spark")
+    return bool(glob.glob(os.path.join(spark_home, "jars", "postgresql-*.jar")))
+
+
 @pytest.fixture(scope="session")
 def spark():
     from pyspark.sql import SparkSession
 
-    session = (
+    builder = (
         SparkSession.builder
         .appName("spark_into_postgres-tests")
         .master("local[2]")
-        .config("spark.jars.packages", "org.postgresql:postgresql:42.7.7")
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.ui.enabled", "false")
-        .getOrCreate()
     )
+    if not _driver_jdbc_ja_no_classpath():
+        builder = builder.config("spark.jars.packages", "org.postgresql:postgresql:42.7.7")
+
+    session = builder.getOrCreate()
     yield session
     session.stop()

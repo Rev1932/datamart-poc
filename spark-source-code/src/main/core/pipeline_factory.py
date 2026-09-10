@@ -138,6 +138,9 @@ class PipelineFactory():
     self.pipelines = {
       "gold": PipelineGoldWrapper,
       "gold_datamart": PipelineGoldDatamartWrapper,
+      # Apelido de gold_datamart: a DAG do benchmark le melhor com datamart_pg ao lado de
+      # datamart_ch, e os dois destinos ficam simetricos tambem no nome.
+      "datamart_pg": PipelineGoldDatamartWrapper,
       "datamart_ch": PipelineDatamartClickhouseWrapper,
       "bronze_silver": PipelineBronzeToSilverWrapper,
       "silver_super_tenant": PipelineSilverSuperTenantWrapper,
