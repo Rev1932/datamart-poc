@@ -606,27 +606,74 @@ o tempo de parede da carga não é variável do experimento.
 
 ### Artefatos
 
-`airflow/dags/k8s_<tenant>_datamart.py`,
-`airflow/dags/manifests/spark-honeycomb-datamart-{pg,ch}.yaml`.
+`airflow/dags/datamart_dag.py` (fábrica compartilhada), `airflow/dags/k8s_acme_datamart.py` e
+`k8s_globex_datamart.py`, `airflow/dags/manifests/spark-honeycomb-datamart.yaml`,
+`infra/spark/spark-tenant-config.yaml`, `infra/spark/spark-secrets.yaml` (reescrito),
+`src/main/utils/session.py` (alterado), `scripts/bootstrap.sh` e `infra/airflow/values.yaml`.
+
+### Três desvios da v3.0, e o porquê de cada um
+
+**Um manifesto, não dois.** Os braços diferem só no `--pipeline`, que a DAG monta. Dois arquivos
+idênticos divergiriam na primeira correção feita em um deles.
+
+**Uma fábrica e dois arquivos de tenant.** Produção tem um arquivo autocontido por tenant; com dois
+tenants seriam ~200 linhas duplicadas. A lógica vive em `datamart_dag.py` e cada tenant é um
+`criar_dag("<tenant>")`. O `dag_id` continua literal, que é o que o Airflow indexa.
+
+**`max_active_tis_per_dag=1` fica.** A v3.0 o removeu junto com o `expand_kwargs` por filial. Mas as
+tasks continuam mapeadas — sobre `tables[]`, não sobre filiais — e duas tabelas no config subiriam
+dois drivers ao mesmo tempo. Remover uma guarda porque hoje ela não é exercida é como o nó vai ser
+derrubado quando alguém acrescentar a segunda tabela.
+
+### O que a DAG precisou trazer junto
+
+| Peça | Por quê |
+|---|---|
+| `spark-<tenant>-config` / `-secret` | O `spark-secrets` estava fixo no acme. Sem separar, o placeholder `TENANT` do manifesto não teria o que resolver |
+| Catálogo ClickHouse na `SparkSessionFactory` | **Lacuna de T2.3**: o teste de integração montava a própria `SparkSession`. Num job real o `writeTo` não resolveria o nome da tabela |
+| Delta e S3A no `sparkConf` | O `spark-defaults.conf` da imagem é sombreado pelo Spark-on-K8s — [incidente #13](../TROUBLESHOOTING.md#13-spark-defaultsconf-da-imagem-nao-chega-ao-driver-sob-o-operator) |
+| `manifests/` no ConfigMap das DAGs | `--from-file` de diretório ignora subpasta; o initContainer recoloca o template onde a DAG o procura |
 
 ### Aceite
 
 ```bash
-kubectl -n airflow exec statefulset/airflow-scheduler -c scheduler -- \
-  airflow dags trigger k8s_acme_datamart
+kubectl -n airflow exec airflow-scheduler-0 -c scheduler -- \
+  airflow dags trigger k8s_acme_datamart -e 2026-08-10T00:00:00+00:00
 ```
 1. As duas tasks concluem `success`;
 2. Postgres e ClickHouse têm a **mesma contagem** na partição carregada;
 3. `airflow dags list-import-errors` continua vazio.
+
+**Parcial em 2026-09-10.** As duas DAGs importam sem erro e o CR renderizado prova a cadeia:
+
+```
+--pipeline datamart_pg --tenant_name acme --filial_name acme --table_name fact_200_cep
+--janela_inicio 2025-08-01 00:00:00 --janela_fim 2025-09-01 00:00:00
+--colunas_obrigatorias timestamp filial banco unidade_producao_id
+--primary_key filial banco andon_peso_id
+```
+
+Janela alinhada ao mês a partir de `data_interval_start=2025-08-21`, `VERSION`→`poc` e `TENANT`→`acme`
+nas três referências de `envFrom`. O job planeja a query, resolve o Delta e roda 15 stages.
+
+Os itens (1) e (2) não fecham: `dw_andon_peso` tem 2 dos 5 arquivos do snapshot ausentes do bucket e a
+carga morre em `SparkFileNotFoundException` — dado, não código
+([incidente #15](../TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver)).
 
 ### Riscos {#riscos-4}
 
 | Risco | Sinal | Mitigação |
 |---|---|---|
 | Silver alterada durante o DagRun | Contagens divergentes entre os braços, irreprodutível | Premissa 3. Carregar a silver com a DAG pausada; o aceite (2) acusa |
-| Os dois drivers Spark simultâneos | `OOMKilled` no nó, ou pod `Pending` sem recurso | Tasks em sequência, não em paralelo |
+| Os dois drivers Spark simultâneos | `OOMKilled` no nó, ou pod `Pending` sem recurso | Tasks em sequência, e `max_active_tis_per_dag=1` dentro de cada uma |
+| Trigger com `logical_date` anterior ao `start_date` | DagRun **verde** com zero task instance | `start_date` em 2025-01-01, antes do dado mais antigo da silver — [incidente #14](../TROUBLESHOOTING.md#14-dagrun-verde-sem-executar-nenhuma-task) |
 | SA errada no RoleBinding | `serviceaccount:airflow:airflow-worker cannot create sparkapplications` | RoleBinding para `airflow-scheduler` (E1 T1.7) |
-| Falha do braço PG deixa o CH sem carga | Cadeia interrompida com um datamart carregado e o outro não | `trigger_rule="all_done"` na segunda task, e o portão do E3 exige os dois |
+
+> **`trigger_rule="all_done"` na segunda task foi descartado.** A v3.0 o propunha para que uma falha no
+> braço PG não deixasse o CH sem carga. O efeito é o oposto do desejado: com o PG falho nada foi
+> carregado nele, e rodar o CH assim mesmo produz **um** datamart carregado — exatamente o estado
+> inconsistente que a regra queria evitar. Com `all_success`, uma falha em qualquer braço para a cadeia,
+> e o par continua comparável.
 
 ---
 

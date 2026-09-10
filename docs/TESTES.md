@@ -760,11 +760,49 @@ indisponível dentro do cluster), e as consultas passaram a usar o schema do fix
 fixo. O fixture `spark` só pede o driver JDBC por `spark.jars.packages` quando o jar não está no
 classpath: resolver por ivy exige rede, e a imagem já traz o jar.
 
-### 5.6 O que continua sem cobertura
+### 5.6 T2.6 — a DAG, e a primeira execução real
 
-O aceite de T2.6 depende de execução real: nenhum job Spark rodou contra a silver até aqui, e a junção
-das quatro tabelas nunca foi executada. Os testes de integração usam DataFrame sintético — provam a
-gravação em cada destino, não a query.
+Duas DAGs (`k8s_acme_datamart`, `k8s_globex_datamart`) importam sem erro e serializam com 5 tasks.
+Disparada a do acme com `logical_date=2025-08-21`, o CR renderizado traz a janela alinhada ao mês
+(`2025-08-01` a `2025-09-01`), `VERSION`→`poc`, `TENANT`→`acme` nas três referências de `envFrom`, e
+`colunas_obrigatorias`/`primary_key` vindos da seed.
+
+Três defeitos apareceram nessa primeira execução, nenhum detectável em teste:
+
+| # | Defeito | Onde se esconderia |
+|---|---|---|
+| [13](TROUBLESHOOTING.md#13-spark-defaultsconf-da-imagem-nao-chega-ao-driver-sob-o-operator) | O `spark-defaults.conf` da imagem é sombreado pelo Spark-on-K8s: sem Delta no `sparkConf` a query morre em `UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY` | Roda local na mesma imagem |
+| [14](TROUBLESHOOTING.md#14-dagrun-verde-sem-executar-nenhuma-task) | `logical_date` antes do `start_date`: DagRun **verde** em 63 ms, zero task instance | O estado do run diz `success` |
+| [15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver) | 2 dos 5 arquivos do snapshot de `dw_andon_peso` não estão no bucket | Contar parquet na listagem dá 52 — dez vezes o que o snapshot referencia |
+
+O #15 é dado, não código, e é o que impede o aceite: a carga morre em
+`SparkFileNotFoundException` depois de 15 stages.
+
+#### Distribuição de `data_hora` na silver
+
+Medida pelo `s3()` do ClickHouse sobre os 52 parquet de `dw_andon_peso` (12,8 GB): **85,8 M de linhas
+em 14 meses**, de 2025-08 a 2026-09.
+
+| Mês | Linhas | | Mês | Linhas |
+|---|---:|---|---|---:|
+| 2025-08 | 91.458 | | 2026-03 | 4.204.252 |
+| 2025-09 | 1.563.750 | | 2026-04 | 5.388.312 |
+| 2025-10 | 3.870.460 | | 2026-05 | 4.959.210 |
+| 2025-11 | 3.429.937 | | 2026-06 | 8.933.859 |
+| 2025-12 | 6.628.684 | | 2026-07 | 17.435.840 |
+| 2026-01 | 2.056.483 | | 2026-08 | 20.753.187 |
+| 2026-02 | 3.247.167 | | 2026-09 | 3.254.447 |
+
+Uma execução típica de um mês toca **uma** partição — é o insumo que faltava para
+[T3.0](epicos/E3-validacao.md#t30--portão-de-janela) decidir entre `REPLACE PARTITION` e
+`ReplacingMergeTree`. A medição está aqui, a decisão continua sendo daquela task.
+
+### 5.7 O que continua sem cobertura
+
+A junção das quatro tabelas nunca completou. Os testes de integração usam DataFrame sintético —
+provam a gravação em cada destino, não a query. Seguem sem evidência o aceite #2 de T2.2 (mesma
+janela, mesma contagem nos dois braços) e o `count(distinct hk_business_id) == count(*)` sobre dado
+real.
 
 ## 6. Épico 3 — Validação
 

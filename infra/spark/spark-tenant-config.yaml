@@ -1,0 +1,69 @@
+# Config e credenciais POR TENANT, consumidas via envFrom pelo driver e pelos executores.
+#
+# A separação espelha a de produção e é o que dá sentido ao placeholder TENANT da DAG:
+#   spark-secrets         credenciais da plataforma S3, iguais para todos
+#   spark-<tenant>-config caminhos, schemas e nomes de database — não é segredo
+#   spark-<tenant>-secret usuário e senha dos dois destinos do tenant
+#
+# A ordem no envFrom importa: o secret do tenant vem por último e vence.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-acme-config
+  namespace: datamart
+data:
+  MINIO_BASE_PATH: "s3a://datamart"
+  SPARK_S3_ENDPOINT: "http://minio.datamart.svc.cluster.local:9000"
+  # Os dois viram MINIO_BASE_PATH/S3_PATH_SILVER e .../S3_PATH_GOLD nas queries. O gold não é
+  # materializado na POC, mas QueryUtils.build_query exige a chave presente.
+  TRINO_SCHEMA_FOLDER_SILVER: "business_datavault_data-bee"
+  TRINO_SCHEMA_FOLDER_GOLD: "business_datavault_gold"
+  POSTGRES_HOST: "postgres.datamart.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DATABASE: "dm_acme"
+  POSTGRES_SCHEMA: "public"
+  DATAMART_CH_URL: "http://clickhouse-datamart.datamart.svc.cluster.local:8123"
+  DATAMART_CH_CATALOG: "clickhouse"
+  DATAMART_CH_DATABASE: "dm_acme"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spark-acme-secret
+  namespace: datamart
+type: Opaque
+stringData:
+  POSTGRES_USER: "dm_app"
+  POSTGRES_PASSWORD: "dm_app_poc"
+  DATAMART_CH_USER: "u_acme_loader"
+  DATAMART_CH_PASSWORD: "acme_loader_poc"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-globex-config
+  namespace: datamart
+data:
+  MINIO_BASE_PATH: "s3a://datamart"
+  SPARK_S3_ENDPOINT: "http://minio.datamart.svc.cluster.local:9000"
+  TRINO_SCHEMA_FOLDER_SILVER: "business_datavault_data-bee"
+  TRINO_SCHEMA_FOLDER_GOLD: "business_datavault_gold"
+  POSTGRES_HOST: "postgres.datamart.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DATABASE: "dm_globex"
+  POSTGRES_SCHEMA: "public"
+  DATAMART_CH_URL: "http://clickhouse-datamart.datamart.svc.cluster.local:8123"
+  DATAMART_CH_CATALOG: "clickhouse"
+  DATAMART_CH_DATABASE: "dm_globex"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spark-globex-secret
+  namespace: datamart
+type: Opaque
+stringData:
+  POSTGRES_USER: "dm_app"
+  POSTGRES_PASSWORD: "dm_app_poc"
+  DATAMART_CH_USER: "u_globex_loader"
+  DATAMART_CH_PASSWORD: "globex_loader_poc"

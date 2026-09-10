@@ -12,7 +12,7 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 14 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1, T2.2, T2.3, T2.4 e T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda. Falta **T2.6**, a DAG.
+**Progresso:** 14 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1 a T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda. T2.6 entregue e disparada — o aceite espera a recópia de `dw_andon_peso`.
 
 Execução dos testes registrada em [TESTES.md](TESTES.md) — 60 testes, **1 defeito aberto**:
 [D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup), sem correção possível e mitigado.
@@ -330,12 +330,32 @@ colunas. Vazio é o default e desliga a limpeza, então `gold_datamart` em produ
 Postgres erravam no setup **desde antes da 3.3.0** e ninguém viu, porque `-m "not integration"` os
 deselecionava. Corrigido e executados pela primeira vez.
 
-### ⬜ T2.6 — DAG
-Aceite: um trigger na DAG carrega os dois destinos, com a mesma contagem na partição
+### 🟡 T2.6 — DAG
+Aceite: um trigger na DAG carrega os dois destinos, com a mesma contagem na partição.
+**Entregue e disparada; o aceite não fecha por falta de dado** — ver
+[incidente #15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver)
 
-- [ ] `k8s_<tenant>_datamart.py` — duas tasks, **em sequência**
-- [ ] 2 manifestos com placeholders `TENANT`/`VERSION`
-- [ ] `JANELA_INICIO`/`JANELA_FIM` do `data_interval` do DagRun
+- [x] `k8s_acme_datamart.py` e `k8s_globex_datamart.py` sobre `datamart_dag.py`, duas cargas **em sequência**
+- [x] 1 manifesto com placeholders `TENANT`/`VERSION` — o que difere entre os braços é só `--pipeline`
+- [x] Janela do `data_interval` do DagRun, calculada **uma vez** e consumida pelos dois
+- [x] `spark-<tenant>-config` e `spark-<tenant>-secret`, que dão sentido ao placeholder `TENANT`
+- [x] Catálogo ClickHouse na `SparkSessionFactory` — lacuna de T2.3, só visível fora do teste
+- [ ] Carga concluída nos dois destinos
+
+O CR renderizado prova a cadeia até a borda do dado:
+
+```
+--pipeline datamart_pg --tenant_name acme --filial_name acme --table_name fact_200_cep
+--janela_inicio 2025-08-01 00:00:00 --janela_fim 2025-09-01 00:00:00
+--colunas_obrigatorias timestamp filial banco unidade_producao_id
+--primary_key filial banco andon_peso_id
+```
+
+Janela alinhada ao mês a partir de `data_interval_start=2025-08-21`, `VERSION`→`poc`,
+`TENANT`→`acme` nas três referências de `envFrom`. O job planeja a query, resolve o Delta e roda
+15 stages; morre em `SparkFileNotFoundException`, porque **2 dos 5 arquivos do snapshot de
+`dw_andon_peso` não foram copiados** — um de `limeira` e um de `uberaba`, filial que não existe no
+bucket. As outras três tabelas estão completas.
 
 Uma DAG, não duas encadeadas por Dataset: sem gold materializada não há produtor, e o mesmo DagRun é o
 que garante janela idêntica nos dois braços. Em sequência porque dois drivers Spark não cabem no nó.
@@ -395,7 +415,9 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 
 ### Abertas
 
-Nenhuma.
+| # | O quê | Bloqueia |
+|---|---|---|
+| 9 | **Recopiar `dw_andon_peso`** para o MinIO: 2 dos 5 arquivos do snapshot Delta não estão no bucket, um deles de `source=data-bee_uberaba`, filial ausente. Alternativa: `FSCK REPAIR TABLE`, que faz a tabela voltar a ler **sem** essas linhas | Aceite de T2.6 e **todo o E3** |
 
 ### Encerradas
 
