@@ -7,20 +7,21 @@ ClickHouse (Altinity operator), Spark Operator (kubeflow).
 
 Índice:
 1. [`application-local.conf` ausente (ConfigManager)](#1-application-localconf-ausente)
-2. [pyhocon mantém aspas em chaves com ponto (`spark.conf`)](#2-pyhocon-mantem-aspas-nas-chaves-com-ponto)
-3. [Python 3.12 na imagem (deadsnakes falha no focal)](#3-python-312-na-imagem--deadsnakes-nao-funciona-no-focal)
+2. [pyhocon mantém aspas em chaves com ponto (`spark.conf`)](#2-pyhocon-mantém-aspas-nas-chaves-com-ponto)
+3. [Python 3.12 na imagem (deadsnakes falha no focal)](#3-python-312-na-imagem--deadsnakes-não-funciona-no-focal)
 4. [Log handler ClickHouse quebra no import](#4-log-handler-clickhouse-quebra-no-import)
 5. [`--packages` (ivy) falha no Spark Operator: `HOME=/nonexistent`](#5---packages-ivy-falha-no-spark-operator)
 6. [CHI nunca fica `condition=Ready`](#6-chi-nunca-fica-conditionready)
-7. [Setting de merge "não aplicado" (falso positivo)](#7-setting-de-merge-nao-aplicado-falso-positivo)
+7. [Setting de merge "não aplicado" (falso positivo)](#7-setting-de-merge-não-aplicado-falso-positivo)
 8. [Avisos benignos do minikube](#8-avisos-benignos-do-minikube)
 9. [`UNRESOLVED_COLUMN dap.andon_peso_id` + chave-pk inexistente](#9-unresolved_column-dapandon_peso_id--chave-pk-inexistente)
-10. [Pipeline `datamart` trava no `extract` / apiserver TLS timeout](#10-pipeline-datamart-trava-no-extract--apiserver-tls-timeout--em-aberto)
-11. [`save` no ClickHouse falha com `Magic is not correct` (LZ4) — incompat de versão](#11-save-no-clickhouse-falha-com-magic-is-not-correct-lz4--incompat-de-versao)
-12. [`minikube image load` não substitui tag existente](#12-minikube-image-load-nao-substitui-tag-existente)
-13. [`spark-defaults.conf` da imagem não chega ao driver sob o operator](#13-spark-defaultsconf-da-imagem-nao-chega-ao-driver-sob-o-operator)
+10. [Pipeline `datamart` trava no `extract` / apiserver TLS timeout](#10-pipeline-datamart-trava-no-extract--apiserver-tls-timeout)
+11. [`save` no ClickHouse falha com `Magic is not correct` (LZ4) — incompat de versão](#11-save-no-clickhouse-falha-com-magic-is-not-correct-lz4--incompat-de-versão)
+12. [`minikube image load` não substitui tag existente](#12-minikube-image-load-não-substitui-tag-existente)
+13. [`spark-defaults.conf` da imagem não chega ao driver sob o operator](#13-spark-defaultsconf-da-imagem-não-chega-ao-driver-sob-o-operator)
 14. [DagRun verde sem executar nenhuma task](#14-dagrun-verde-sem-executar-nenhuma-task)
 15. [`SparkFileNotFoundException` na silver: arquivo no log Delta, ausente no bucket](#15-sparkfilenotfoundexception-na-silver)
+16. [DagRun com `logical_date` futura fica `queued` até a data chegar](#16-dagrun-com-logical_date-futura-fica-queued-até-a-data-chegar)
 
 ---
 
@@ -460,7 +461,7 @@ não tem o que falhar: fecha como sucesso.
 
 ## 15. `SparkFileNotFoundException` na silver
 
-> Status: **em aberto** — depende de recópia do dado.
+> Status: **resolvido em 2026-09-11** — cópia pelo snapshot fixado, [ao fim desta seção](#correção-copiar-uma-versão-não-a-tabela).
 
 **Sintoma:** o job planeja a query, roda ~15 stages e falha na leitura:
 
@@ -485,16 +486,110 @@ uma quinta filial que não existe no bucket: só limeira, maracanau, paulinia e 
 Não adianta restringir a janela: o predicado é `to_timestamp(substring(data_hora, 1, 23), ...)`, não
 uma comparação direta na coluna, então o Delta não consegue usar as estatísticas para pular arquivo.
 
-**Dois caminhos, e a escolha é de quem ingeriu o dado:**
+**Repetir o mirror não resolve — e piorou.** Segunda execução em 2026-09-10 14:00: trouxe o log da
+versão 3280 à 3307 e **um** arquivo de dados. Os ausentes passaram de 2 para 5 de 5.
+
+Réplica do log da v2860 à v3307, conferindo o conjunto vivo de cada versão contra o bucket:
+
+| | |
+|---|---|
+| Versões com snapshot completo | **0 de 448** |
+| Melhor caso | 1 arquivo ausente; a versão mais recente assim é a **v3254** |
+| Estado corrente (v3307) | 5 de 5 ausentes |
+
+**Duas causas independentes:**
+
+1. **`source=data-bee_uberaba` nunca foi copiada** — zero arquivos, nas duas execuções. É o único
+   ausente na v3254; limeira, maracanau, paulinia e pompeia estão íntegras ali (11,17 M de linhas).
+2. **A tabela é reescrita a cada commit**: 5 arquivos vivos, um por filial, e cada commit troca o de
+   uma. O `mc mirror` copia `_delta_log/` **antes** de `source=.../` — ordem lexical, `_` (0x5F) vem
+   antes de `s` (0x73). O log chega apontando para arquivos que a cópia ainda não trouxe, e numa
+   tabela em escrita contínua isso nunca converge.
+
+**Caminhos, em ordem de preferência:**
 
 | Caminho | Efeito |
 |---|---|
-| Recopiar `dw_andon_peso` da origem | Recupera as linhas. É o certo se `uberaba` deve estar no experimento |
-| `FSCK REPAIR TABLE` no Delta | Tira do log as referências mortas. A tabela volta a ler, **sem** as linhas desses dois arquivos |
+| `DEEP CLONE` da origem para um caminho estático, e espelhar o clone | Snapshot imóvel. É o único que resolve a causa 2 de vez |
+| Parar a escrita na origem durante o mirror | Resolve enquanto durar a parada |
+| Copiar dados → log → **dados de novo**, até estabilizar | Converge se a taxa de commit for menor que a de cópia |
+| `RESTORE TO VERSION AS OF 3254` + `FSCK REPAIR TABLE` | Não toca na origem. Deixa a tabela legível com **4 das 5 filiais**, 11,17 M de linhas. Perde `uberaba` |
 
-> **Contar os arquivos do bucket não detecta isso.** Há 52 parquet em `dw_andon_peso`, dez vezes o
-> que o snapshot referencia — o resto é versão antiga ainda não expurgada. A conferência tem que ser
-> contra o `_delta_log`, não contra a listagem.
+> **Contar arquivo no bucket não detecta nada disso.** Há 53 parquet de dados em `dw_andon_peso` e o
+> snapshot referencia 5 — o resto é versão superada. Foi assim que a primeira medição de
+> distribuição saiu 7,7× maior que a real. A conferência é sempre contra o `_delta_log`.
+
+### Correção: copiar uma versão, não a tabela
+
+Nenhum dos caminhos da tabela acima foi usado. O que resolveu foi copiar só o snapshot de uma versão
+fixada: **1,73 GiB em vez de 12 GiB**, sem tocar na origem, com as 5 filiais. A saída conferida está em
+[TESTES §5.8](TESTES.md#58-t26--aceite-sobre-o-snapshot-fixado). Os comandos abaixo usam a v3321
+(checkpoint 3320); para outra versão, troque os números.
+
+```fish
+# 1. Log primeiro: o último .json fixa a versão N; o _last_checkpoint dá o checkpoint C
+mc cp --recursive minio-prod/datawake-unipac/business_datavault_data-bee/dw_andon_peso/_delta_log/ \
+  ~/silver-ref/dw_andon_peso-v3321/_delta_log/
+ls ~/silver-ref/dw_andon_peso-v3321/_delta_log/ | grep '\.json$' | tail -1
+jq .version ~/silver-ref/dw_andon_peso-v3321/_delta_log/_last_checkpoint
+
+# 2a. Arquivos vivos no checkpoint C
+kubectl -n datamart exec -i chi-datamart-datamart-0-0-0 -- clickhouse local --input-format Parquet \
+  -q "SELECT add.path, add.size, add.deletionVector.storageType FROM table WHERE add.path IS NOT NULL FORMAT TSV" \
+  < ~/silver-ref/dw_andon_peso-v3321/_delta_log/00000000000000003320.checkpoint.parquet
+
+# 2b. O que cada commit de C+1 a N adiciona (+) e remove (-). Aplicar em ordem sobre a lista de 2a
+jq -r 'if .add then "+ \(.add.path) \(.add.size)" elif .remove then "- \(.remove.path)" else empty end' \
+  ~/silver-ref/dw_andon_peso-v3321/_delta_log/00000000000000003321.json
+
+# 3. Baixar só os arquivos vivos, um mc cp por arquivo
+mc cp minio-prod/datawake-unipac/business_datavault_data-bee/dw_andon_peso/source=data-bee_limeira/part-00000-cfcc05ec-63e2-42a7-9a79-83b138a01a34.c000.snappy.parquet \
+  ~/silver-ref/dw_andon_peso-v3321/source=data-bee_limeira/
+
+# 4. Conferir cada um: tamanho igual ao add.size e rodapé PAR1
+stat -c %s ~/silver-ref/dw_andon_peso-v3321/source=data-bee_limeira/part-00000-cfcc05ec-63e2-42a7-9a79-83b138a01a34.c000.snappy.parquet
+tail -c 4 ~/silver-ref/dw_andon_peso-v3321/source=data-bee_limeira/part-00000-cfcc05ec-63e2-42a7-9a79-83b138a01a34.c000.snappy.parquet
+
+# 5. Subir para o cluster: dados primeiro, log por último
+mc mirror --exclude "_delta_log/*" ~/silver-ref/dw_andon_peso-v3321/ \
+  poc/datamart/business_datavault_data-bee/dw_andon_peso/
+mc mirror ~/silver-ref/dw_andon_peso-v3321/_delta_log/ \
+  poc/datamart/business_datavault_data-bee/dw_andon_peso/_delta_log/
+```
+
+Armadilhas deste procedimento:
+
+- **O destino não pode ter `_delta_log` de outra cópia.** O leitor usa o maior commit que encontrar. Um
+  `.json` de versão maior que N, sobrando de um mirror anterior, aponta para arquivos que não vieram, e o
+  erro volta.
+- **Log por último na subida**, pelo mesmo motivo do mirror: durante a cópia, um leitor não encontra
+  tabela nenhuma, em vez de encontrar um log apontando para arquivo ausente.
+- **Deletion vector** (arquivo auxiliar que marca linhas apagadas sem reescrever o parquet): se a
+  terceira coluna de 2a vier diferente de `\N`, o arquivo `deletion_vector_*.bin` da raiz da tabela também
+  precisa vir. Na v3321 nenhum dos 5 usa.
+- **Checkpoint em várias partes:** se o `_last_checkpoint` trouxer o campo `parts`, o checkpoint C é
+  mais de um arquivo, e o passo 2a roda sobre todos eles.
+- **Sem time travel.** O log lista versões anteriores a N, mas os arquivos delas não vieram. Ler uma
+  versão anterior falha com o mesmo `SparkFileNotFoundException`.
+- Nem o host nem a imagem `honeycomb:poc` têm `pyarrow`. O `clickhouse local` lê o checkpoint pela
+  entrada padrão sem gravar nada no pod.
+
+---
+
+## 16. DagRun com `logical_date` futura fica `queued` até a data chegar
+
+> Status: **contornado** (2026-09-11).
+
+**Sintoma:** `airflow dags trigger k8s_globex_datamart -e 2026-09-15T00:00:00+00:00`, disparado em
+2026-09-11, cria o run em `queued` e ele não sai de lá, mesmo com a DAG livre. Nenhum erro.
+
+**Causa raiz:** com `core.allow_trigger_in_future` desligado (o padrão), o scheduler só promove para
+`running` os runs cuja `logical_date` já passou. O run não é recusado no trigger: fica esperando, e
+**roda sozinho quando a data chegar**, possivelmente no meio de uma medição do E3.
+
+**Correção:** para carregar o mês corrente, disparar com uma data do mês que já passou
+(`-e 2026-09-10T00:00:00+00:00`). A janela é derivada do mês, então qualquer dia dele produz a mesma
+carga. O run futuro, que não tinha nenhuma task instance, foi marcado `failed` pelo `DagRun.set_state`.
 
 ---
 

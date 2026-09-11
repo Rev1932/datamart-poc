@@ -2,11 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.0 |
-| Data | 2026-09-04 |
-| Status | Não iniciado |
+| Versão | 1.1 |
+| Data | 2026-09-11 |
+| Status | Não iniciado — pré-requisitos no [estado de partida](../TODO.md#estado-de-partida--o-que-o-e2-entrega-ao-e3) |
 | Objetivo | Produzir `benchmark/results/RESULTADO.md` — o material da apresentação |
-| Depende de | [E2](E2-execucao.md) completo |
+| Depende de | [E2](E2-execucao.md) completo ✅ |
 | Bloqueia | — |
 | Progresso | [../TODO.md](../TODO.md) |
 
@@ -22,9 +22,17 @@ que interrompem o trabalho se o dado não estiver íntegro.
 1. Os dois braços estão carregados pela **mesma query sobre a silver, com a mesma janela explícita**,
    no mesmo DagRun. Ver [E2 v3.0](E2-execucao.md) — a gold não é materializada.
    Corolário: a silver esteve parada durante a carga. Se não esteve, T3.1 pode falhar por dado, não por
-   motor.
+   motor. **Hoje ela é parada por construção:** a silver do cluster é o snapshot da v3321 de
+   `dw_andon_peso`, copiado de uma vez, que nada reescreve. Uma recópia da origem desfaz isso.
 2. O dado é uma amostra real — as conclusões são de **razão entre motores**, não de latência absoluta.
-3. Existem dois tenants no ClickHouse.
+   O recorte do experimento é **de 2026-07 a 2026-09**, 7,13 M de linhas na silver, com as 5 filiais
+   nos três meses. Decisão do usuário em 2026-09-11. A v3321 inteira tem 11,95 M em 14 meses.
+3. Existem dois tenants **carregados** no ClickHouse. O `dm_globex` tem o mesmo recorte do `dm_acme` e é
+   idêntico a ele, porque os dois leem a mesma silver. Para a T3.3 isso basta: ela mede disputa por
+   recurso, não conteúdo.
+4. O Postgres é medido **com** o índice do dashboard (`02_indices.sql`) e o terceiro braço existe
+   (`03_pg_tuned.sql`). Os dois rodam depois da última carga. Medir sem eles compara o ClickHouse com um
+   Postgres que ninguém usaria em produção.
 
 ## Fora de escopo
 
@@ -46,8 +54,25 @@ Projeção de custo em produção, dimensionamento de cluster produtivo, plano d
 
 ## T3.0 — Portão de janela
 
-Roda logo após [E2](E2-execucao.md) T2.5 — a silver precisa existir —, **antes** de fechar a DDL
-definitiva do ClickHouse em T2.3.
+A ordem prevista não se cumpriu: a DDL do ClickHouse foi fechada em [E2](E2-execucao.md) T2.3 com
+`REPLACE PARTITION` antes desta medição, e a DAG de T2.6 deriva uma janela de **um mês** por DagRun.
+Com isso a pergunta abaixo tem resposta por construção, igual a 1. Este portão passa a confirmar
+ou reverter uma escolha já implementada, e o escopo que sobra é decisão do usuário: fechar com esse
+número, ou medir o **atraso de chegada** do dado.
+
+O atraso **é** mensurável no snapshot: a silver guarda `load_dts` por linha, com 160 dias distintos na
+limeira, e não o regrava a cada commit. Sondagem só da limeira, com `data_hora` a partir de 2026-03:
+nenhuma linha chega 2 meses ou mais depois do seu mês, mas até **16 %** de um mês chega no mês
+seguinte (2026-08: 395 043 de 2 447 664). A DAG atual, com um mês por execução, perderia essas
+linhas em produção se não reprocessasse o mês anterior.
+
+A medição completa, nas 5 filiais, e a comparação medida entre `REPLACE PARTITION` e
+`ReplacingMergeTree` para a POC e para produção estão em
+[analise-estrategia-carga-clickhouse.md](../analise-estrategia-carga-clickhouse.md).
+
+**Fechado em 2026-09-11** com a decisão do usuário, registrada no
+[ADR-004](../decisoes/ADR-004-janela-de-carga.md): a POC fica com `REPLACE PARTITION`; produção terá o
+B2, `ReplacingMergeTree` carregado por watermark de `load_dts`.
 
 ### O que medir
 
@@ -263,7 +288,10 @@ Mais um gráfico de barras ASCII por query, para colar num deck sem ferramenta.
 - Page cache do SO não derrubado — "cold" é cache do motor;
 - minikube não é produção: uma réplica, sem Keeper, sem replicação;
 - volume da POC não é o volume produtivo — as conclusões são de **razão**, não de latência absoluta;
-- database-por-tenant não dá isolamento de recursos; o que a POC mostra é o controle por quota.
+- database-por-tenant não dá isolamento de recursos; o que a POC mostra é o controle por quota;
+- método de carga: a POC lê uma `MergeTree` limpa. Com o B2 decidido para produção
+  ([ADR-004](../decisoes/ADR-004-janela-de-carga.md)), as consultas do mês corrente pagam o `FINAL`,
+  medido em 3,5 a 7× no painel enquanto a partição tem várias parts.
 
 > Um benchmark que exagera é exatamente o que a gerência vai atacar. Declarar a limitação vale mais que o
 > número — e é o que faz o resto da apresentação ser levado a sério.

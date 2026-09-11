@@ -12,11 +12,15 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
 
-**Progresso:** 14 de 20 tasks fechadas. **Épico 1 completo** — M1 atingido. E2 em execução: T2.1 a T2.5 fechadas contra o honeycomb **3.3.0**, que agora é a imagem que o cluster roda. T2.6 entregue e disparada — o aceite espera a recópia de `dw_andon_peso`.
+**Progresso:** 17 de 20 tasks fechadas. **Épicos 1 e 2 completos** — M1 e M2 atingidos. No E3, **os
+dois portões fecharam**: a T3.0 com a estratégia de carga decidida no ADR-004 (POC com `REPLACE
+PARTITION`, produção futura com B2), e a T3.1 com `delta = 0` nos três braços do `dm_acme` — M3
+atingido. O [estado de partida](#estado-de-partida--o-que-o-e2-entrega-ao-e3) tem os dois tenants
+carregados de 2026-07 a 2026-09, índice do painel e `gold_tuned` aplicados. Próximo: T3.2.
 
-Execução dos testes registrada em [TESTES.md](TESTES.md) — 60 testes, **1 defeito aberto**:
+Execução dos testes registrada em [TESTES.md](TESTES.md), **1 defeito aberto**:
 [D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup), sem correção possível e mitigado.
-D14 e D15, achados nesta rodada, foram corrigidos e verificados.
+D16, D17 e D18 foram corrigidos e verificados.
 
 ---
 
@@ -26,8 +30,8 @@ D14 e D15, achados nesta rodada, foram corrigidos e verificados.
 |---|---|---|
 | **M0 — Especificação fechada** | E0 inteiro | ✅ |
 | **M1 — Stack de pé** | Checklist Go/No-Go de [E1](epicos/E1-infraestrutura.md) — **9 de 9** | ✅ |
-| **M2 — Dado fluindo** | Um trigger no Airflow carrega os dois braços, na mesma janela | ⬜ |
-| **M3 — Dado íntegro** | `compare-counts.sh` com `delta = 0` em toda linha | ⬜ |
+| **M2 — Dado fluindo** | Um trigger no Airflow carrega os dois braços, na mesma janela | ✅ |
+| **M3 — Dado íntegro** | `compare-counts.sh` com `delta = 0` em toda linha | ✅ |
 | **M4 — Evidência pronta** | `benchmark/results/RESULTADO.md` com as 8 seções | ⬜ |
 
 M3 é portão duro: sem ele, M4 não começa.
@@ -222,7 +226,15 @@ teto de 768Mi que eu havia apertado ficava abaixo do necessário com qualquer co
 
 ---
 
-## Épico 2 — Execução → [especificação](epicos/E2-execucao.md)
+## ✅ Épico 2 — Execução → [especificação](epicos/E2-execucao.md)
+
+**Encerrado em 2026-09-11.** 6 tasks, Go/No-Go 10 de 10. Um trigger em `k8s_acme_datamart` carregou
+Postgres e ClickHouse a partir da silver, com a mesma query e a mesma janela, e os dois chegaram a
+**1 039 682 linhas**, iguais filial a filial e sem chave repetida. Código entregue nas PRs #8 e #9.
+
+O que custou mais do que o código foi o **dado**: a cópia de `dw_andon_peso` por `mc mirror` nunca
+convergiu, porque a tabela é reescrita a cada commit e o log chega antes dos dados. Resolvido copiando
+só o snapshot fixado de uma versão — [incidente #15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver).
 
 **Replanejado em 2026-09-09 (spec v3.0).** A cadeia vai da **silver direto para os datamarts**: saem o
 passo bronze → silver e a materialização da gold no Delta (feature futura, fora do escopo da POC). Sobram
@@ -261,7 +273,7 @@ com o dado ingerido e com o desenho do épico.
 `:latest` do registry — sem `datamart_ch` na factory e com o `INTERVAL 10 DAYS` na query. O registry não
 publica a 3.3.0 (só `3.9.0`..`3.9.10`), então a base sai do `Dockerfile` da própria release, que veio no
 rsync e é auto-contido. Junto foi corrigido o `minikube image load`, **no-op silencioso** quando a tag já
-existe no nó — [incidente #12](TROUBLESHOOTING.md#12-minikube-image-load-nao-substitui-tag-existente).
+existe no nó — [incidente #12](TROUBLESHOOTING.md#12-minikube-image-load-não-substitui-tag-existente).
 
 ### ✅ T2.5 — Contrato de entrada da silver
 **Não é task de código.** O usuário ingere as tabelas silver já em Delta, de fora do repositório. Aqui só
@@ -330,32 +342,31 @@ colunas. Vazio é o default e desliga a limpeza, então `gold_datamart` em produ
 Postgres erravam no setup **desde antes da 3.3.0** e ninguém viu, porque `-m "not integration"` os
 deselecionava. Corrigido e executados pela primeira vez.
 
-### 🟡 T2.6 — DAG
-Aceite: um trigger na DAG carrega os dois destinos, com a mesma contagem na partição.
-**Entregue e disparada; o aceite não fecha por falta de dado** — ver
-[incidente #15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver)
+### ✅ T2.6 — DAG
+Aceite: run `manual__2026-09-11T12:33:58` com as 5 tasks em `success`, e **1 039 682 linhas nos dois
+destinos** para a janela `2026-09-01` → `2026-10-01` —
+[§5.8](TESTES.md#58-t26--aceite-sobre-o-snapshot-fixado)
 
 - [x] `k8s_acme_datamart.py` e `k8s_globex_datamart.py` sobre `datamart_dag.py`, duas cargas **em sequência**
 - [x] 1 manifesto com placeholders `TENANT`/`VERSION` — o que difere entre os braços é só `--pipeline`
 - [x] Janela do `data_interval` do DagRun, calculada **uma vez** e consumida pelos dois
 - [x] `spark-<tenant>-config` e `spark-<tenant>-secret`, que dão sentido ao placeholder `TENANT`
 - [x] Catálogo ClickHouse na `SparkSessionFactory` — lacuna de T2.3, só visível fora do teste
-- [ ] Carga concluída nos dois destinos
+- [x] Carga concluída nos dois destinos — `carga_postgres` em 7,5 min, `carga_clickhouse` em 8,7 min
 
-O CR renderizado prova a cadeia até a borda do dado:
+| Filial | Postgres | ClickHouse |
+|---|---:|---:|
+| LIMEIRA | 710 774 | 710 774 |
+| MARACANAU | 68 632 | 68 632 |
+| PAULINIA | 212 264 | 212 264 |
+| POMPEIA | 7 463 | 7 463 |
+| UBERABA | 40 549 | 40 549 |
+| **Total** | **1 039 682** | **1 039 682** |
 
-```
---pipeline datamart_pg --tenant_name acme --filial_name acme --table_name fact_200_cep
---janela_inicio 2025-08-01 00:00:00 --janela_fim 2025-09-01 00:00:00
---colunas_obrigatorias timestamp filial banco unidade_producao_id
---primary_key filial banco andon_peso_id
-```
-
-Janela alinhada ao mês a partir de `data_interval_start=2025-08-21`, `VERSION`→`poc`,
-`TENANT`→`acme` nas três referências de `envFrom`. O job planeja a query, resolve o Delta e roda
-15 stages; morre em `SparkFileNotFoundException`, porque **2 dos 5 arquivos do snapshot de
-`dw_andon_peso` não foram copiados** — um de `limeira` e um de `uberaba`, filial que não existe no
-bucket. As outras três tabelas estão completas.
+`count(distinct hk_business_id)` também é 1 039 682 dos dois lados. O ClickHouse tem uma única partição
+ativa, `202609`. A primeira tentativa, em 2026-09-10, morreu em `SparkFileNotFoundException` por
+arquivos da silver ausentes no bucket. Era dado, não código, e foi resolvida pela recópia fixada em
+uma versão.
 
 Uma DAG, não duas encadeadas por Dataset: sem gold materializada não há produtor, e o mesmo DagRun é o
 que garante janela idêntica nos dois braços. Em sequência porque dois drivers Spark não cabem no nó.
@@ -367,18 +378,66 @@ Saem: a DAG de `bronze_silver`, a DAG de gold, o Dataset e os `outlets`, o `expa
 
 ## Épico 3 — Validação → [especificação](epicos/E3-validacao.md)
 
-### ⬜ T3.0 — **PORTÃO** de janela
-Aceite: [ADR-004](decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido
+### Estado de partida — o que o E2 entrega ao E3
 
-- [ ] Medir meses distintos tocados por execução típica
-- [ ] Decidir `REPLACE PARTITION` × `ReplacingMergeTree`
-- [ ] Registrar no ADR-004
+**Pronto**
 
-### ⬜ T3.1 — **PORTÃO** de corretude
-Aceite: `bash benchmark/compare-counts.sh` → `delta = 0` em **toda** linha
+- [x] Silver **imóvel**: `dw_andon_peso` é o snapshot da v3321 de produção, com o log até 3321 e os 5
+      arquivos vivos. Nada escreve nela, então a premissa "silver parada durante a carga" deixa de
+      depender de disciplina
+- [x] Distribuição da v3321 medida: **11,95 M de linhas em 14 meses**, 5 filiais —
+      [§5.8](TESTES.md#58-t26--aceite-sobre-o-snapshot-fixado)
+- [x] `dm_acme` carregado em 2026-09, com paridade entre os dois destinos
 
-- [ ] `compare-counts.sh` com `count` e `sum(valor)` por `(filial, mês)`
-- [ ] Executar e conferir
+**Falta.** Os quatro primeiros vão nesta ordem, cada um dependendo do anterior. O do globex é
+independente e só precisa vir antes da T3.3.
+
+- [x] **Decidir o volume** — decisão do usuário em 2026-09-11: **de 2026-07 a 2026-09**, 7,13 M de
+      linhas na silver, 60 % da v3321. São os três meses de maior volume, todos com as 5 filiais
+- [x] 2026-07 e 2026-08 carregados em `dm_acme` (`-e 2026-07-15`, `-e 2026-08-15`), 19 e 22 min.
+      **7 114 401 linhas nos dois destinos**, com diferença zero em `count` e `sum(valor)` nas 15 combinações
+      `(filial, mês)` — [TESTES §6.1](TESTES.md#61-preparação--carga-do-recorte-e-índice-do-dashboard)
+- [x] `ddl/postgres/02_indices.sql` em `dm_acme` — `ix_fact_200_cep_dash`, 401 MB, mais `ANALYZE`
+- [x] `ddl/postgres/03_pg_tuned.sql` em `dm_acme` — 3 partições mensais, 7 114 401 linhas, `EXCEPT ALL`
+      contra o `public` vazio. Revelou o [D17](TESTES.md#d17--o-gold_tuned-criava-os-índices-antes-da-carga):
+      o script criava os índices antes da carga. Corrigido no script e reconstruído no banco
+- [x] `dm_globex` carregado com o mesmo recorte: 7 114 401 linhas, paridade exata entre os destinos e
+      **idêntico ao `dm_acme`** — os dois leem a mesma silver. Só a T3.3 usa este tenant
+- [x] RBAC com o dado real: `verify-rbac.sh` 4/4, e cada leitor lê o próprio tenant e recebe `Code 497`
+      no outro
+
+- [x] Recarga de 2026-09 sobre o dado existente: idempotente nos dois destinos. O merge do Postgres
+      custou 3,5× a primeira carga; a troca de partição do ClickHouse, ~0,1 s nos dois casos —
+      [TESTES §6.2](TESTES.md#62-recarga-sobre-dado-existente--o-custo-do-merge)
+- [x] `VACUUM (PARALLEL 0, ANALYZE)` em `public.fact_200_cep` depois da recarga — zero versões mortas
+- [x] Correção do [D18](TESTES.md#d18--o-devshm-de-64-mib-derruba-o-vacuum-paralelo-do-postgres)
+      aplicada: `/dev/shm` de 256Mi no Postgres. Um hash join paralelo chegou a 96 MiB ali, o que falharia
+      com o limite antigo
+
+**A preparação está completa.** Os dois portões, T3.0 e T3.1, estão fechados. O próximo passo é a T3.2.
+
+### ✅ T3.0 — **PORTÃO** de janela
+Aceite: [ADR-004](decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido — 1 partição por
+execução na POC, 2 em produção; atraso p99 de 213 h — [TESTES §6.4](TESTES.md#64-t30--portão-de-janela)
+
+- [x] Medir meses distintos tocados por execução típica — e o atraso de chegada, nas 5 filiais
+- [x] Decidir `REPLACE PARTITION` × `ReplacingMergeTree` — medidos os dois, com três variantes de RMT
+- [x] Registrar no ADR-004
+
+**Decisão do usuário:** a POC fica com `REPLACE PARTITION`; produção terá o B2 (RMT por watermark de
+`load_dts`), a implementar no futuro. O foco da POC segue sendo a comparação de leitura entre ClickHouse
+e Postgres. Análise em [analise-estrategia-carga-clickhouse.md](analise-estrategia-carga-clickhouse.md).
+
+### ✅ T3.1 — **PORTÃO** de corretude
+Aceite: `bash benchmark/compare-counts.sh` → `delta = 0` em **toda** linha — 15 chaves
+`(filial, mês)` nos três braços do `dm_acme`, exit 0 — [TESTES §6.3](TESTES.md#63-t31--portão-de-corretude)
+
+- [x] `compare-counts.sh` com `count` e `sum(valor)` por `(filial, mês)`
+- [x] Executar e conferir
+
+O braço `pgt` entra na comparação. O `dm_globex` não tem `gold_tuned` e passa com `--sem-pgt`. O caminho
+de falha foi exercitado sobre extratos adulterados, sem tocar nos bancos: `count`, soma com diferença de
+0,001, chave ausente e chave a mais saem todos com código 1.
 
 > Sem `delta = 0`, T3.2 não roda. Número de performance sobre dado divergente é pior que nenhum número.
 
@@ -417,12 +476,16 @@ Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
 
 | # | O quê | Bloqueia |
 |---|---|---|
-| 9 | **Recopiar `dw_andon_peso`** para o MinIO: 2 dos 5 arquivos do snapshot Delta não estão no bucket, um deles de `source=data-bee_uberaba`, filial ausente. Alternativa: `FSCK REPAIR TABLE`, que faz a tabela voltar a ler **sem** essas linhas | Aceite de T2.6 e **todo o E3** |
+| 12 | **Resíduos no cluster e no disco**, para você remover: pods `pytest-t21`, `pytest-t23`, `pytest-t24`, `pytest-t26` e `smoke-clickhouse-driver` (`Completed`); `~/silver-ref/dw_andon_peso/` (20 GiB, a cópia incompleta); o database `bench_carga` do ClickHouse (3,2 GiB, 10 tabelas da análise de carga). A referência estática é `~/silver-ref/dw_andon_peso-v3321/` e **fica**. Os schemas `teste_t24*` já foram removidos | Nada, só ocupam espaço |
 
 ### Encerradas
 
 | # | O quê | Desfecho |
 |---|---|---|
+| 11 | Estratégia de carga (T3.0) | **Decidido em 2026-09-11:** POC com `REPLACE PARTITION`; produção futura com B2, RMT por watermark de `load_dts` — [ADR-004](decisoes/ADR-004-janela-de-carga.md), [análise](analise-estrategia-carga-clickhouse.md) |
+| 13 | Aplicar a correção do D18 | **Aplicada em 2026-09-11**, com autorização do usuário: `/dev/shm` de 256Mi no Postgres, pod recriado, dado intacto no PVC |
+| 10 | Volume do E3 | **De 2026-07 a 2026-09**, decisão do usuário em 2026-09-11: 7,13 M de linhas na silver. Os 11 meses anteriores ficam de fora — 4,82 M de linhas |
+| 9 | Cópia consistente de `dw_andon_peso` | **Resolvido em 2026-09-11.** O `mc mirror` da tabela viva nunca convergiu. Em vez dele, copiada só a v3321: o log até ali e os 5 arquivos que o snapshot referencia, 1,73 GiB, conferidos pelo tamanho que o log registra e pelo rodapé Parquet — [incidente #15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver) |
 | 3 | Ajustar `.wslconfig` | Resolvido: perfis redimensionados para os 15,5 GiB reais |
 | 4 | Primeiro commit da branch | Feito |
 | 5 | Nomes de `filial` no seed do Mongo | **Não é decisão da POC**: é contrato de arquitetura entre os serviços. `scripts/minio-ui.sh` deriva e imprime os caminhos a partir do control plane, em vez de pedir que alguém os reconcilie na mão |

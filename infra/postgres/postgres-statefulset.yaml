@@ -73,6 +73,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            # O /dev/shm padrão do runtime tem 64 MiB; VACUUM e hash join paralelos alocam DSM ali.
+            - name: shm
+              mountPath: /dev/shm
           resources:
             requests:
               cpu: "300m"
@@ -85,6 +88,11 @@ spec:
               command: ["pg_isready", "-U", "dm_app", "-d", "postgres"]
             initialDelaySeconds: 10
             periodSeconds: 5
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
   volumeClaimTemplates:
     - metadata:
         name: data
