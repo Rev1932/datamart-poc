@@ -2,11 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.8 |
-| Data da execução | 2026-09-08 |
-| Branch | `feat/v2-olap` |
-| Escopo | **Épico 1 completo** — T1.1 a T1.7, em quatro rodadas |
-| Resultado | **48 testes** · 40 verdes · 7 falharam e passaram após correção · 1 teve o critério substituído · 1 defeito aberto |
+| Versão | 1.10 |
+| Data da execução | 2026-09-08 (E1) · 2026-09-09 a 2026-09-11 (E2 e início do E3) |
+| Branch | `feat/v2-olap` (E1) · `feat/v2-olap-e2-execucao` (E2, E3) |
+| Escopo | **Épicos 1 e 2 completos** — T1.1 a T1.8 e T2.1 a T2.6. **E3:** preparação, T3.0 e T3.1 |
+| Resultado | E1: **48 testes** · 40 verdes · 7 falharam e passaram após correção · 1 teve o critério substituído. E2 e E3 registram por seção (§5, §6). Defeitos D4 a D18; **1 aberto** (D4) |
 | Progresso das tasks | [TODO.md](TODO.md) — este arquivo registra **execução**, não estado |
 
 Este arquivo é o registro de **execução de teste**. Cada rodada é organizada por épico, e dentro do épico
@@ -412,7 +412,8 @@ CREATE INDEX fact_200_cep_202603_timestamp_idx ON gold_tuned.fact_200_cep_202603
   USING brin ("timestamp") WITH (pages_per_range='32')
 ```
 
-Custo em disco dos dois métodos, sobre as dez partições:
+Custo em disco dos dois métodos, sobre as dez partições. Medido com os índices criados antes da carga,
+o que infla o btree e pode deixar o BRIN sem resumo — ver [D17](#d17--o-gold_tuned-criava-os-índices-antes-da-carga):
 
 | Método | Índices | Tamanho |
 |---|---|---|
@@ -674,8 +675,10 @@ porque nenhum dos dois aparece em teste de caminho feliz:
 
 ## 5. Épico 2 — Execução
 
-🟨 **T2.1, T2.2 e T2.3 executadas em 2026-09-09**, contra o honeycomb **3.3.0** (`a5f2fa4`).
-Ambiente: pod efêmero a partir de `honeycomb:poc`, com `pytest` instalado em `--user`.
+✅ **Encerrado em 2026-09-11.** T2.1 a T2.3 executadas em 2026-09-09, T2.4 e T2.5 em 2026-09-10,
+T2.6 fechada em 2026-09-11 sobre o dado real — [§5.8](#58-t26--aceite-sobre-o-snapshot-fixado).
+Código: honeycomb **3.3.0** (`a5f2fa4`) mais o patch da POC. Testes de unidade e de integração em pod
+efêmero a partir de `honeycomb:poc`, com `pytest` instalado em `--user`.
 
 ### 5.1 Resultados
 
@@ -711,18 +714,15 @@ tem 4 tabelas e 3 casas. Detalhamento em [ADR-001](decisoes/ADR-001-resync-honey
 
 ### 5.4 O que falta no épico
 
-| Task | Bloqueado por |
-|---|---|
-| T2.6 — DAG | nada |
-
-T2.5 (contrato de entrada) está satisfeito: as 4 tabelas silver foram ingeridas e verificadas.
+Nada. Esta seção registrava o que bloqueava a T2.6. O último bloqueio foi a cópia da silver, fechada
+em [§5.8](#58-t26--aceite-sobre-o-snapshot-fixado).
 
 Três bloqueios de ambiente foram levantados e fechados em 2026-09-10, nenhum deles visível no código:
 
 | Bloqueio | Como se manifestava | Correção |
 |---|---|---|
 | `honeycomb:poc` não carregava o patch | `--pipeline datamart_ch` morreria em `KeyError` na factory | Base passa a ser `honeycomb:3.3.0-local`, do `Dockerfile` da release |
-| `minikube image load` não substitui tag | Pod roda o código velho, **verde** | `docker save \| docker exec -i minikube docker load` — [incidente #12](TROUBLESHOOTING.md#12-minikube-image-load-nao-substitui-tag-existente) |
+| `minikube image load` não substitui tag | Pod roda o código velho, **verde** | `docker save \| docker exec -i minikube docker load` — [incidente #12](TROUBLESHOOTING.md#12-minikube-image-load-não-substitui-tag-existente) |
 | `job-init` do Postgres nunca invocado | `dm_acme`/`dm_globex` inexistentes | ConfigMap + Job no passo 8/12 do `bootstrap.sh` |
 
 ### 5.5 T2.4 — braço Postgres e simetria
@@ -743,7 +743,7 @@ O sexto caso do ClickHouse é novo e cobre a razão de a limpeza existir: `times
 compartilhado, e a troca de partição aceita a carga. Sem isso o destino recusa: `timestamp` é coluna de
 partição e de ordenação, e não pode ser `Nullable`.
 
-#### D14 — o fixture do braço Postgres estava quebrado desde antes da 3.3.0
+#### D16 — o fixture do braço Postgres estava quebrado desde antes da 3.3.0
 
 **Severidade: média. Cobertura ausente sem sinal.**
 
@@ -771,12 +771,12 @@ Três defeitos apareceram nessa primeira execução, nenhum detectável em teste
 
 | # | Defeito | Onde se esconderia |
 |---|---|---|
-| [13](TROUBLESHOOTING.md#13-spark-defaultsconf-da-imagem-nao-chega-ao-driver-sob-o-operator) | O `spark-defaults.conf` da imagem é sombreado pelo Spark-on-K8s: sem Delta no `sparkConf` a query morre em `UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY` | Roda local na mesma imagem |
+| [13](TROUBLESHOOTING.md#13-spark-defaultsconf-da-imagem-não-chega-ao-driver-sob-o-operator) | O `spark-defaults.conf` da imagem é sombreado pelo Spark-on-K8s: sem Delta no `sparkConf` a query morre em `UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY` | Roda local na mesma imagem |
 | [14](TROUBLESHOOTING.md#14-dagrun-verde-sem-executar-nenhuma-task) | `logical_date` antes do `start_date`: DagRun **verde** em 63 ms, zero task instance | O estado do run diz `success` |
 | [15](TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver) | 2 dos 5 arquivos do snapshot de `dw_andon_peso` não estão no bucket | Contar parquet na listagem dá 52 — dez vezes o que o snapshot referencia |
 
-O #15 é dado, não código, e é o que impede o aceite: a carga morre em
-`SparkFileNotFoundException` depois de 15 stages.
+O #15 é dado, não código, e foi o que segurou o aceite: a carga morria em
+`SparkFileNotFoundException` depois de 15 stages. Resolvido em [§5.8](#58-t26--aceite-sobre-o-snapshot-fixado).
 
 #### Distribuição de `data_hora` na silver
 
@@ -784,6 +784,9 @@ O #15 é dado, não código, e é o que impede o aceite: a carga morre em
 > 85,8 M de linhas. Está errada por **7,7×**: o diretório guarda versões superadas do Delta, não só
 > o snapshot vivo. A contagem válida é sobre os arquivos que o `_delta_log` referencia — 4 deles,
 > um por filial. **Contar arquivo em bucket de tabela Delta não mede a tabela.**
+
+> **Substituída pela medição da v3321**, com as 5 filiais, em
+> [§5.8](#58-t26--aceite-sobre-o-snapshot-fixado). Esta fica como registro da cópia antiga.
 
 Snapshot v3254 de `dw_andon_peso`, 4 filiais: **11,17 M de linhas em 14 meses**, de 2025-08 a 2026-09.
 
@@ -824,18 +827,472 @@ Duas causas independentes:
 
 ### 5.7 O que continua sem cobertura
 
-A junção das quatro tabelas nunca completou. Os testes de integração usam DataFrame sintético —
-provam a gravação em cada destino, não a query. Seguem sem evidência o aceite #2 de T2.2 (mesma
-janela, mesma contagem nos dois braços) e o `count(distinct hk_business_id) == count(*)` sobre dado
-real.
+A junção das quatro tabelas completou sobre o dado real, e com isso o aceite #2 de T2.2 e o
+`count(distinct hk_business_id) == count(*)` passaram a ter evidência ([§5.8](#58-t26--aceite-sobre-o-snapshot-fixado)).
+Seguem sem cobertura:
+
+| Não coberto | Consequência |
+|---|---|
+| ~~Recarga da mesma janela sobre o dado real~~ | **Coberto em [§6.2](#62-recarga-sobre-dado-existente--o-custo-do-merge)**: contagem, soma e chave inalteradas nos dois destinos |
+| `k8s_globex_datamart` | A DAG importa, mas nunca rodou. O código é o mesmo do acme; o que muda é `spark-globex-config` / `-secret`, que nunca foram exercidos |
+| Comparação **linha a linha** entre os destinos | Contagem e chave batem. Valores de coluna não foram comparados — é o `sum(valor)` da T3.1. `load_dts` diverge por construção e fica de fora |
+| Mais de um mês carregado | Só `202609` existe. A troca de uma partição sem tocar a vizinha não foi exercida sobre dado real |
+
+### 5.8 T2.6 — aceite sobre o snapshot fixado
+
+#### A cópia da silver
+
+O `mc mirror` da tabela viva não converge ([§5.6](#por-que-o-segundo-mirror-piorou-o-quadro)). Em
+2026-09-11 a cópia passou a ser de **uma versão**, não da tabela:
+
+1. Baixar o `_delta_log/` da origem (`datawake-unipac`, 889 arquivos, 16 MiB) e fixar a versão pelo
+   último `.json`: **v3321**, checkpoint na 3320;
+2. Calcular o snapshot: as ações `add` do checkpoint, mais o `add`/`remove` do commit 3321;
+3. Baixar **só** os arquivos que o snapshot referencia;
+4. Subir os dados para o MinIO do cluster e o log **por último**.
+
+| Filial | Arquivo vivo | Bytes no log | Bytes no cluster |
+|---|---|---:|---:|
+| limeira | `part-00000-cfcc05ec-…` | 1 115 676 971 | 1 115 676 971 |
+| maracanau | `part-00000-b6d4e547-…` | 247 587 379 | 247 587 379 |
+| paulinia | `part-00000-96539de7-…` | 397 136 290 | 397 136 290 |
+| pompeia | `part-00000-e4559ed7-…` | 14 849 991 | 14 849 991 |
+| uberaba | `part-00000-aafca157-…` | 56 557 984 | 56 557 984 |
+
+Nenhum dos 5 usa deletion vector. A conferência foi feita pelo tamanho registrado no log e pelo rodapé
+`PAR1`, não por checksum. O que essa cópia não permite é time travel: o log lista versões anteriores,
+mas os arquivos delas não vieram. A referência local fica em `~/silver-ref/dw_andon_peso-v3321/`.
+
+O checkpoint foi lido com `clickhouse local` no pod do ClickHouse, pela entrada padrão. Nem o host
+nem a imagem `honeycomb:poc` têm `pyarrow`, e instalar só para isso não se justificava.
+
+#### A carga
+
+| | |
+|---|---|
+| Run | `manual__2026-09-11T12:33:58.641922+00:00` — 5 tasks `success` |
+| Janela | `2026-09-01 00:00:00` → `2026-10-01 00:00:00` |
+| `carga_postgres` | 12:34:08 → 12:41:41 (7,5 min) |
+| `carga_clickhouse` | 12:41:51 → 12:50:32 (8,7 min) |
+
+| Filial | Postgres | ClickHouse | Último `timestamp` |
+|---|---:|---:|---|
+| LIMEIRA | 710 774 | 710 774 | 2026-09-11 03:28:43 |
+| MARACANAU | 68 632 | 68 632 | 2026-09-11 02:57:26 |
+| PAULINIA | 212 264 | 212 264 | 2026-09-10 15:59:15 |
+| POMPEIA | 7 463 | 7 463 | 2026-09-11 02:11:02 |
+| UBERABA | 40 549 | 40 549 | 2026-09-11 02:59:21 |
+| **Total** | **1 039 682** | **1 039 682** | |
+
+`count(distinct hk_business_id)` = 1 039 682 nos dois lados, e a tupla `(filial, banco, andon_peso_id)`
+também. O ClickHouse tem uma partição ativa, `202609`, em 6 parts. O último `timestamp` (03:28) é anterior
+ao commit 3321 da origem (03:50), o que bate com a versão copiada.
+
+#### Distribuição de `data_hora` na v3321
+
+Lida só a coluna `data_hora` dos 5 arquivos vivos, pelo `s3()` do ClickHouse. **11 948 786 linhas em
+14 meses**, de 2025-08 a 2026-09:
+
+| Mês | Linhas | Filiais | | Mês | Linhas | Filiais |
+|---|---:|---:|---|---|---:|---:|
+| 2025-08 | 30 486 | 1 | | 2026-03 | 422 293 | 4 |
+| 2025-09 | 227 166 | 2 | | 2026-04 | 642 638 | 4 |
+| 2025-10 | 445 919 | 3 | | 2026-05 | 559 426 | 5 |
+| 2025-11 | 497 617 | 3 | | 2026-06 | 963 773 | 5 |
+| 2025-12 | 541 897 | 4 | | 2026-07 | 2 600 527 | 5 |
+| 2026-01 | 188 120 | 4 | | 2026-08 | **3 480 843** | 5 |
+| 2026-02 | 303 276 | 4 | | 2026-09 | 1 044 805 | 5 |
+
+A uberaba começa em 2026-05. Setembro tem 1 044 805 linhas na silver e 1 039 682 na fato: as
+**5 123** que faltam (0,49 %) caíram nos `INNER JOIN` com as outras três tabelas ou no `.na.drop` do
+`transform`. Como os dois braços executam o mesmo `transform`, a perda é a mesma dos dois lados. É
+filtro da query, não divergência entre motores.
 
 ## 6. Épico 3 — Validação
 
-⬜ **Nenhum teste executado.** E3 depende de E2 inteiro e do dado real.
+🟨 **Preparação completa e os dois portões fechados**: T3.1 ([§6.3](#63-t31--portão-de-corretude)) e
+T3.0 ([§6.4](#64-t30--portão-de-janela)). T3.2, T3.3 e T3.4 ainda não foram executadas. O estado de cada uma está no
+[estado de partida](TODO.md#estado-de-partida--o-que-o-e2-entrega-ao-e3) do TODO.
+
+### 6.1 Preparação — carga do recorte e índice do dashboard
+
+Recorte decidido pelo usuário em 2026-09-11: **de 2026-07 a 2026-09**. Setembro já estava carregado
+([§5.8](#58-t26--aceite-sobre-o-snapshot-fixado)); julho e agosto entraram por dois triggers.
+
+| Run | `carga_postgres` | `carga_clickhouse` |
+|---|---|---|
+| `manual__2026-07-15T00:00:00+00:00` | 9,7 min | 9,5 min |
+| `manual__2026-08-15T00:00:00+00:00` | 12,0 min | 9,5 min |
+
+Paridade conferida à mão, com a mesma saída que o `compare-counts.sh` da T3.1 vai produzir:
+
+| Mês | Filial | Postgres | ClickHouse | Δ `count` | Δ `sum(valor)` |
+|---|---|---:|---:|---:|---:|
+| 202607 | LIMEIRA | 1 680 734 | 1 680 734 | 0 | 0 |
+| 202607 | MARACANAU | 365 170 | 365 170 | 0 | 0 |
+| 202607 | PAULINIA | 388 920 | 388 920 | 0 | 0 |
+| 202607 | POMPEIA | 21 422 | 21 422 | 0 | 0 |
+| 202607 | UBERABA | 140 809 | 140 809 | 0 | 0 |
+| 202608 | LIMEIRA | 2 447 664 | 2 447 664 | 0 | 0 |
+| 202608 | MARACANAU | 365 831 | 365 831 | 0 | 0 |
+| 202608 | PAULINIA | 503 271 | 503 271 | 0 | 0 |
+| 202608 | POMPEIA | 12 790 | 12 790 | 0 | 0 |
+| 202608 | UBERABA | 148 108 | 148 108 | 0 | 0 |
+| 202609 | LIMEIRA | 710 774 | 710 774 | 0 | 0 |
+| 202609 | MARACANAU | 68 632 | 68 632 | 0 | 0 |
+| 202609 | PAULINIA | 212 264 | 212 264 | 0 | 0 |
+| 202609 | POMPEIA | 7 463 | 7 463 | 0 | 0 |
+| 202609 | UBERABA | 40 549 | 40 549 | 0 | 0 |
+| **Total** | | **7 114 401** | **7 114 401** | **0** | **0** |
+
+`count(distinct hk_business_id)` é igual ao `count` em todas as linhas, nos dois lados. O ClickHouse
+tem 3 partições ativas, uma por mês. Da silver para a fato caem 11 774 linhas (0,17 %), a maior parte
+da pompeia: em julho, 24 894 na silver viram 21 422 na fato. É filtro da query, igual nos dois braços.
+
+> **Isto não fecha a T3.1.** O aceite dela é o `compare-counts.sh` executável, que ainda não existe. A
+> conferência aqui garante que a suíte de leitura vai começar sobre dado íntegro.
+
+`02_indices.sql` aplicado depois da última carga: `ix_fact_200_cep_dash` com 401 MB, criado em 20 s,
+mais `ANALYZE`. `public.fact_200_cep` ocupa 3 336 MB no total, contando o índice da chave única
+(849 MB).
+
+`03_pg_tuned.sql` aplicado em seguida, com autorização do usuário para o `DROP TABLE IF EXISTS` (que
+não encontrou tabela): 1 min 57 s.
+
+| Conferência de `gold_tuned` contra `public` | Resultado |
+|---|---|
+| Partições | `202607` 2 597 055 · `202608` 3 477 664 · `202609` 1 039 682 · `default` vazia |
+| `count(*)` e `sum(valor)` | 7 114 401 nos dois; somas iguais |
+| `EXCEPT ALL` sobre `(hk_business_id, valor)` | 0 linhas |
+| Tamanho | 2 804 MB — sem o índice da chave única, que o `LIKE` não copia |
+
+A primeira leitura dos tamanhos de índice revelou o
+[D17](#d17--o-gold_tuned-criava-os-índices-antes-da-carga): o B-tree do painel saiu com 706 MB e o
+BRIN de dois meses sem resumo. Após `REINDEX TABLE`, o B-tree ficou com 401 MB, igual ao do `public`.
+
+RBAC com o dado real: `verify-rbac.sh` **4/4** (escrita do leitor negada, leitura cruzada entre
+tenants negada com `Code 497`, `readonly = 2`, `join_use_nulls = 1`). No sentido positivo, que é o que
+a T3.2 usa, `u_acme_ro` lê as 7 114 401 linhas de `dm_acme.fact_200_cep`, nos 3 meses.
+
+#### Tenant globex
+
+`k8s_globex_datamart` rodou pela primeira vez, com o mesmo recorte: três DagRuns, cargas de 5,9 a
+10,4 min. As 15 combinações `(filial, mês)` batem entre Postgres e ClickHouse em `count` e `sum(valor)`,
+`hk_business_id` é único, e o conjunto é **idêntico ao do `dm_acme`**: 7 114 401 linhas, mesmas somas.
+Isso exercita pela primeira vez `spark-globex-config` e `spark-globex-secret`.
+
+O run de setembro foi disparado primeiro com `-e 2026-09-15`, data futura, e ficou parado em `queued`
+([incidente #16](TROUBLESHOOTING.md#16-dagrun-com-logical_date-futura-fica-queued-até-a-data-chegar)).
+Refeito com `-e 2026-09-10`; o run futuro, sem nenhuma task instance, foi marcado `failed`.
+
+`u_globex_ro` lê as 7 114 401 linhas do próprio tenant e recebe `ACCESS_DENIED (497)` em
+`dm_acme.fact_200_cep`: o isolamento vale nos dois sentidos, não só no que o `verify-rbac.sh` testa.
+
+#### Script de `gold_tuned` corrigido, executado de ponta a ponta
+
+Rodado em `dm_globex` entre `BEGIN` e `ROLLBACK`, com a medição dos índices antes do rollback: 2 min 23 s,
+7 114 401 linhas, e os índices saem **iguais aos do `dm_acme` reconstruído** — B-tree de 146, 196 e
+59 MB e BRIN de 120, 160 e 56 kB. Após o rollback, `dm_globex` segue sem o schema `gold_tuned`.
+
+#### Limpeza
+
+Schemas `teste_t24`, `teste_t24_1789041162`, `teste_t24_1789041185` e `teste_t24_1789041219` removidos
+de `dm_acme` com autorização do usuário. Continham só as tabelas de 16 a 32 kB da suíte de T2.4.
+
+### 6.2 Recarga sobre dado existente — o custo do merge
+
+Pedido do usuário: medir o merge quando o dado **já existe** no datamart. Recarregado o mês de menor
+volume do recorte, 2026-09 (1 039 682 linhas), em `dm_acme`: run `manual__2026-09-10T00:00:00+00:00`,
+5 tasks `success`. A linha de base é a primeira carga do mesmo mês, com o destino vazio
+([§5.8](#58-t26--aceite-sobre-o-snapshot-fixado)).
+
+Fontes: marcações de tempo do `AppLogger` no log da task, `pg_stat_statements` para o comando de merge,
+`pg_stat_user_tables` e `system.parts`. O ClickHouse não tem `query_log` (desligado em
+[D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor)), então a troca de partição só tem a
+resolução do log da aplicação.
+
+| Postgres | Primeira carga | Recarga | Razão |
+|---|---:|---:|---:|
+| Staging via JDBC (inclui recomputar a query no Spark) | 75,8 s | 69,5 s | — |
+| **Merge**, `ON CONFLICT DO UPDATE`, medido no banco | **34,7 s** | **121,5 s** | **3,5×** |
+| Blocos lidos do disco | 26 390 | 345 251 | 13× |
+| Blocos sujos | 81 721 | 405 549 | 5,0× |
+| WAL | 0,60 GB | 2,99 GB | 5,0× |
+| Atualizações HOT | — | 0 de 1 039 682 | |
+| Índices mantidos | 1 (chave única) | 2 (chave única + painel) | |
+| Task inteira | 7,5 min | 8,1 min | |
+
+| ClickHouse | Primeira carga | Recarga |
+|---|---:|---:|
+| Staging (inclui recomputar a query no Spark) | 120,5 s | 138,0 s |
+| **`REPLACE PARTITION`** | **0,1 s** | **0,07 s** |
+| Partição `202609` em disco | 76,11 MiB, 6 parts | 76,10 MiB, 6 parts |
+| Parts inativas ou staging sobrando | — | nenhuma |
+| Task inteira | 8,7 min | 8,8 min |
+
+**O que o Postgres deixa para trás.** O `ON CONFLICT DO UPDATE SET` reescreve todas as colunas, sem
+`WHERE`, então cada uma das 1 039 682 linhas ganhou uma versão nova, mesmo idêntica (o `load_dts`
+muda sempre). Nenhuma foi HOT: as páginas estavam cheias, e a versão nova foi para o fim da tabela.
+
+| Depois da recarga | Antes | Depois |
+|---|---:|---:|
+| Tabela | 2 188 MB | 2 506 MB (+318 MB, +14,5 %) |
+| Índice da chave única | 890 MB | 929 MB (+39 MB) |
+| Índice do painel | 420 MB | 482 MB (+62 MB, +14,6 %) |
+| Versões mortas | 0 | 1 045 790 |
+
+O autovacuum **não** dispara sozinho aqui: o limiar padrão é 50 + 20 % da tabela, cerca de 1,42 M de
+versões mortas. O `VACUUM (PARALLEL 0, ANALYZE)` manual levou **14,7 s** e mais 0,63 GB de WAL, e tirou
+as 1 039 682 entradas mortas dos dois índices. Os arquivos não encolhem: o espaço fica reutilizável, e
+a próxima recarga do mesmo mês tende a caber nele. O `VACUUM` paralelo, que é o padrão, falhou —
+[D18](#d18--o-devshm-de-64-mib-derruba-o-vacuum-paralelo-do-postgres).
+
+**Idempotência sobre o dado real**, a lacuna de [§5.7](#57-o-que-continua-sem-cobertura): nos dois
+destinos, 7 114 401 linhas no total e 1 039 682 em setembro, antes e depois. O `sum(valor)` do mês é
+525 212 594 dos dois lados, e o `hk_business_id` segue único. O `load_dts` foi renovado em todas as
+linhas, ou seja, a recarga reescreveu tudo sem duplicar nada.
+
+Leitura dos números:
+
+- **O merge do Postgres fica 3,5× mais caro quando o dado existe**, e o custo continua depois: versões
+  mortas, índices maiores e um `VACUUM` que o autovacuum não faria sozinho. O ClickHouse troca a
+  partição em ~0,1 s nos dois casos. O custo dele é o staging, igual com o destino cheio ou vazio.
+- **Duas variáveis mudaram juntas no Postgres**: o conflito e o índice do painel, criado depois da
+  primeira carga. Os números não separam uma da outra. Como referência, as cargas de julho e agosto
+  (inserção pura, 1 índice) custaram 37 e 48 µs por linha; a recarga custou 117 µs por linha.
+- **O tempo da task quase não muda** (7,5 → 8,1 min e 8,7 → 8,8 min), porque a maior parte dele é o
+  Spark recomputando a query: os `count()` de log e as guardas executam a junção de novo a cada ação,
+  3 vezes no braço Postgres e 5 no braço ClickHouse. O staging dos dois inclui mais uma recomputação,
+  por isso não separa escrita de leitura.
+- O staging do ClickHouse é mais lento que o JDBC do Postgres (138 × 70 s). A causa não foi isolada.
 
 Os dois portões duros continuam fechados: **T3.0** (distribuição de `timestamp`, que decide a estratégia
 de carga e fecha o [ADR-004](decisoes/ADR-004-janela-de-carga.md)) e **T3.1** (`delta = 0` entre os
 braços, sem o qual nenhum número de performance pode ser publicado).
+
+### 6.3 T3.1 — portão de corretude
+
+✅ **Passou em 2026-09-11.** `benchmark/compare-counts.sh` substitui a conferência manual da
+[§6.1](#61-preparação--carga-do-recorte-e-índice-do-dashboard) e passa a ser o aceite formal. Ele
+compara `count(*)` e `sum(valor)` por `(filial, mês)` em três braços, com a diferença sempre em relação
+ao `pg`:
+
+| Braço | Tabela | Leitura |
+|---|---|---|
+| `pg` | `dm_<tenant>` `public.fact_200_cep` | `psql` como `dm_app`, no `postgres-0` |
+| `pgt` | `dm_<tenant>` `gold_tuned.fact_200_cep` | idem |
+| `ch` | `dm_<tenant>.fact_200_cep` | `clickhouse-client` como `u_<tenant>_ro`, o mesmo usuário da T3.2 |
+
+O `pgt` entra porque a T3.2 mede os três braços. Sai com código 0 só se o conjunto de chaves
+`(filial, mês)` for o mesmo nos três braços **e** toda diferença for zero. Chave presente em só um
+braço é falha. Divergência sai com 1 e nomeia a linha; erro de uso, de extração ou de formato do
+extrato sai com 2. Extrato vazio também sai com 2, porque senão três braços vazios passariam como
+"iguais".
+
+**A armadilha da comparação.** O Postgres imprime `numeric` com 3 casas (`285638509.000`), e o
+ClickHouse imprime o `Decimal` sem os zeros à direita (`285638509`). Comparar como texto reprova dado
+íntegro. O script converte as duas somas para milésimos inteiros antes de comparar, o que é exato: o
+maior total, 3,85 × 10¹², fica bem abaixo dos 2⁵³ que o `awk` representa sem perda.
+
+#### Tenant acme — os três braços
+
+```bash
+bash benchmark/compare-counts.sh
+```
+
+```text
+T3.1 — portão de corretude · origem: bancos ao vivo, tenant acme · braços: pg pgt ch
+diferenças em relação ao pg; '-' marca chave ausente no braço
+
+count(*) por (filial, mês)
+mes     filial           n_pg      n_pgt       n_ch delta_pgt  delta_ch  status
+202607  LIMEIRA       1680734    1680734    1680734         0         0  ok
+202607  MARACANAU      365170     365170     365170         0         0  ok
+202607  PAULINIA       388920     388920     388920         0         0  ok
+202607  POMPEIA         21422      21422      21422         0         0  ok
+202607  UBERABA        140809     140809     140809         0         0  ok
+202608  LIMEIRA       2447664    2447664    2447664         0         0  ok
+202608  MARACANAU      365831     365831     365831         0         0  ok
+202608  PAULINIA       503271     503271     503271         0         0  ok
+202608  POMPEIA         12790      12790      12790         0         0  ok
+202608  UBERABA        148108     148108     148108         0         0  ok
+202609  LIMEIRA        710774     710774     710774         0         0  ok
+202609  MARACANAU       68632      68632      68632         0         0  ok
+202609  PAULINIA       212264     212264     212264         0         0  ok
+202609  POMPEIA          7463       7463       7463         0         0  ok
+202609  UBERABA         40549      40549      40549         0         0  ok
+total                 7114401    7114401    7114401         0         0
+
+sum(valor) por (filial, mês)
+mes     filial               sum_pg          sum_pgt           sum_ch     dif_pgt      dif_ch  status
+202607  LIMEIRA       799524195.000    799524195.000    799524195.000           0           0  ok
+202607  MARACANAU     256850778.000    256850778.000    256850778.000           0           0  ok
+202607  PAULINIA      303209526.000    303209526.000    303209526.000           0           0  ok
+202607  POMPEIA        55025634.000     55025634.000     55025634.000           0           0  ok
+202607  UBERABA       151383172.000    151383172.000    151383172.000           0           0  ok
+202608  LIMEIRA       980475565.000    980475565.000    980475565.000           0           0  ok
+202608  MARACANAU     200058471.000    200058471.000    200058471.000           0           0  ok
+202608  PAULINIA      382664700.000    382664700.000    382664700.000           0           0  ok
+202608  POMPEIA        41876145.000     41876145.000     41876145.000           0           0  ok
+202608  UBERABA       157240475.000    157240475.000    157240475.000           0           0  ok
+202609  LIMEIRA       285638509.000    285638509.000    285638509.000           0           0  ok
+202609  MARACANAU      38847923.000     38847923.000     38847923.000           0           0  ok
+202609  PAULINIA      137298502.000    137298502.000    137298502.000           0           0  ok
+202609  POMPEIA        20162314.000     20162314.000     20162314.000           0           0  ok
+202609  UBERABA        43265346.000     43265346.000     43265346.000           0           0  ok
+total                3853521255.000   3853521255.000   3853521255.000           0           0
+
+RESULTADO: OK — 15 chaves (filial, mês) presentes nos 3 braços; delta = 0 em count(*) e sum(valor) em toda linha.
+```
+
+Código de saída **0**, em 16,5 s. Os números batem com a §6.1 linha a linha, com o `sum(valor)` de
+setembro da §6.2 (525 212 594) e com a conferência de `gold_tuned` da §6.1.
+
+#### Tenant globex — sem o braço `pgt`
+
+O `dm_globex` não tem o schema `gold_tuned`: o script foi exercitado ali só entre `BEGIN` e `ROLLBACK`
+([§6.1](#script-de-gold_tuned-corrigido-executado-de-ponta-a-ponta)). O comando padrão recusa com
+código 2 em vez de pular o braço em silêncio. Se o schema sumisse do acme, um salto automático faria o
+portão passar com dois braços:
+
+```text
+ERRO: gold_tuned.fact_200_cep não existe em dm_globex; aplique ddl/postgres/03_pg_tuned.sql ou use --sem-pgt
+```
+
+Com o braço declarado de fora:
+
+```bash
+bash benchmark/compare-counts.sh --tenant globex --sem-pgt
+```
+
+```text
+T3.1 — portão de corretude · origem: bancos ao vivo, tenant globex · braços: pg ch
+diferenças em relação ao pg; '-' marca chave ausente no braço
+
+count(*) por (filial, mês)
+mes     filial           n_pg       n_ch  delta_ch  status
+202607  LIMEIRA       1680734    1680734         0  ok
+202607  MARACANAU      365170     365170         0  ok
+202607  PAULINIA       388920     388920         0  ok
+202607  POMPEIA         21422      21422         0  ok
+202607  UBERABA        140809     140809         0  ok
+202608  LIMEIRA       2447664    2447664         0  ok
+202608  MARACANAU      365831     365831         0  ok
+202608  PAULINIA       503271     503271         0  ok
+202608  POMPEIA         12790      12790         0  ok
+202608  UBERABA        148108     148108         0  ok
+202609  LIMEIRA        710774     710774         0  ok
+202609  MARACANAU       68632      68632         0  ok
+202609  PAULINIA       212264     212264         0  ok
+202609  POMPEIA          7463       7463         0  ok
+202609  UBERABA         40549      40549         0  ok
+total                 7114401    7114401         0
+
+sum(valor) por (filial, mês)
+mes     filial               sum_pg           sum_ch      dif_ch  status
+202607  LIMEIRA       799524195.000    799524195.000           0  ok
+202607  MARACANAU     256850778.000    256850778.000           0  ok
+202607  PAULINIA      303209526.000    303209526.000           0  ok
+202607  POMPEIA        55025634.000     55025634.000           0  ok
+202607  UBERABA       151383172.000    151383172.000           0  ok
+202608  LIMEIRA       980475565.000    980475565.000           0  ok
+202608  MARACANAU     200058471.000    200058471.000           0  ok
+202608  PAULINIA      382664700.000    382664700.000           0  ok
+202608  POMPEIA        41876145.000     41876145.000           0  ok
+202608  UBERABA       157240475.000    157240475.000           0  ok
+202609  LIMEIRA       285638509.000    285638509.000           0  ok
+202609  MARACANAU      38847923.000     38847923.000           0  ok
+202609  PAULINIA      137298502.000    137298502.000           0  ok
+202609  POMPEIA        20162314.000     20162314.000           0  ok
+202609  UBERABA        43265346.000     43265346.000           0  ok
+total                3853521255.000   3853521255.000           0
+
+RESULTADO: OK — 15 chaves (filial, mês) presentes nos 2 braços; delta = 0 em count(*) e sum(valor) em toda linha.
+```
+
+Código de saída **0**, com os mesmos números do acme. Isso basta para o uso do globex, que só entra na
+T3.3 como vizinho barulhento.
+
+#### Teste negativo — o portão falha quando deve
+
+Nenhum dado foi alterado nos bancos. A extração e a comparação são estágios separados:
+`--save-dir DIR` grava os extratos brutos de cada braço em `DIR/<braço>.tsv`, e `--from-dir DIR`
+compara extratos gravados sem abrir conexão. Os extratos reais do acme foram gravados uma vez, e cada
+caso abaixo é uma cópia com **uma** adulteração, conferida por `diff` contra o original:
+
+| Caso | Adulteração na cópia | Saída | Esperado |
+|---|---|---|---|
+| Controle | nenhuma — o extrato real | exit 0, `RESULTADO: OK` | passa |
+| `count` | `ch`: 202609 LIMEIRA, 710 774 → 710 775 | exit 1, `FALHA: 202609 LIMEIRA: count(*) ch - pg = +1` | falha |
+| `sum` com `count` igual | `pgt`: 202607 POMPEIA, soma + 0,001 | exit 1, `FALHA: 202607 POMPEIA: sum(valor) pgt - pg = +0.001` | falha |
+| Chave ausente | `ch`: linha 202608 UBERABA removida | exit 1, `FALHA: 202608 UBERABA: chave ausente no braço ch` | falha |
+| Chave a mais | `pg`: linha 202609 JUNDIAI acrescentada | exit 1, chave ausente em `pgt` e em `ch`, 16 chaves | falha |
+| Casas decimais | 202609 LIMEIRA com `.500` no `pg` e no `pgt` e `.5` no `ch` | exit 0 | passa: a comparação é numérica |
+| Extrato vazio | `ch.tsv` vazio | exit 2, `ERRO: o braço ch não devolveu nenhuma linha` | falha |
+
+O caso da soma é o que mais importa: 0,001 é a menor diferença que um `Decimal(9,3)` expressa, e ela é
+detectada com o `count` intacto. É o sintoma de `DOUBLE` num braço e `Decimal` no outro, da tabela de
+diagnóstico da [T3.1](epicos/E3-validacao.md#diagnóstico-quando-falha).
+
+Saída completa do caso `count`, com as linhas iguais da tabela de somas omitidas:
+
+```text
+count(*) por (filial, mês)
+mes     filial           n_pg      n_pgt       n_ch delta_pgt  delta_ch  status
+...
+202609  LIMEIRA        710774     710774     710775         0        +1  DIVERGE
+...
+total                 7114401    7114401    7114402         0        +1
+
+sum(valor) por (filial, mês)
+...
+total                3853521255.000   3853521255.000   3853521255.000           0           0
+
+FALHA: 202609 LIMEIRA: count(*) ch - pg = +1
+RESULTADO: FALHA — 1 divergência(s) em 15 chave(s) (filial, mês).
+```
+
+Para reproduzir um caso, a partir do fish:
+
+```bash
+bash benchmark/compare-counts.sh --save-dir /tmp/t31/orig
+mkdir /tmp/t31/a-count
+cp /tmp/t31/orig/*.tsv /tmp/t31/a-count/
+awk -F'\t' -v OFS='\t' '$1=="LIMEIRA" && $2=="202609" {$3=$3+1} 1' /tmp/t31/orig/ch.tsv > /tmp/t31/a-count/ch.tsv
+bash benchmark/compare-counts.sh --from-dir /tmp/t31/a-count
+```
+
+O `--save-dir` não sobrescreve extrato existente: numa segunda gravação no mesmo diretório, sai com 2.
+
+`scripts/check-shell-portability.sh` segue saindo 0 com o script novo.
+
+#### O que o portão não prova
+
+- **Igualdade linha a linha.** `count` e `sum` por `(filial, mês)` não pegam erros que se compensam
+  dentro do grupo: duas linhas com `valor` trocado entre si, ou uma linha no `banco` errado da mesma
+  filial. As colunas fora de `valor` não são comparadas. Entre `public` e `gold_tuned` isso já foi
+  coberto pelo `EXCEPT ALL` da §6.1; entre Postgres e ClickHouse, não.
+- **Estado futuro.** O resultado vale para o dado de hoje. Qualquer recarga invalida o portão, e ele
+  precisa rodar de novo antes de a T3.2 medir.
+- **O `load_dts`** difere entre os destinos por construção (E2, T2.3) e fica de fora de propósito.
+
+### 6.4 T3.0 — portão de janela
+
+Fechado em 2026-09-11 com o [ADR-004](decisoes/ADR-004-janela-de-carga.md) preenchido. As medições
+completas, com o método, estão na
+[análise de estratégia de carga](analise-estrategia-carga-clickhouse.md). O essencial:
+
+| Medição | Resultado |
+|---|---|
+| Meses tocados por execução da POC | 1, por construção da janela mensal |
+| Atraso de chegada na silver v3321, 5 filiais, desde 2026-03 (9 714 305 linhas) | p50 7,9 h · p99 213 h · p999 287 h · 12,3 % > 3 dias · 3,8 % > 7 dias · 0,016 % > 14 dias |
+| `REPLACE PARTITION` de 2026-08 (3 477 664 linhas), 3 repetições, só ClickHouse | staging 3,05 a 3,31 s; troca 11 a 37 ms |
+| RMT: 4 execuções de 6 h reenviando 3 dias (281 052 linhas) | 0,28 a 0,80 s por `INSERT`; 8 a 24 % de duplicatas em agosto depois dos merges |
+| Leitura do painel, 1 filial × 1 mês | `MergeTree` 55 ms; RMT com `FINAL` 196 a 385 ms com várias parts, 44 a 53 ms com uma part |
+| `final = 1` no perfil, ClickHouse 24.8 | Ignorado em `MergeTree`; aplicado em RMT; correto em junção dos dois |
+
+Decisão do usuário: POC com `REPLACE PARTITION`; produção futura com B2. As tabelas de experimento
+ficaram no database `bench_carga` ([§9](#9-artefatos-deixados-no-cluster)).
 
 ---
 
@@ -853,6 +1310,11 @@ braços, sem o qual nenhum número de performance pode ser publicado).
 | [D11](#d11--rbac-por-database-não-basta-para-o-connector-spark) | alta | lacuna do template de T1.5 | corrigido, verificado em T-E1-32 |
 | [D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) | alta | default do ClickHouse | corrigido, verificado em T-E1-32 |
 | [D13](#d13--configmap-montada-em-optairflowdags-quebra-o-walker-de-dags) | média | padrão sugerido na especificação | corrigido, verificado em T-E1-35 |
+| [D14](#d14--webserver-do-airflow-em-oomkill-cíclico) | alta | introduzido nesta branch | corrigido, verificado em T-E1-51 |
+| [D15](#d15--minio-uish-aponta-para-um-service-que-não-existe) | alta | introduzido nesta branch | corrigido, verificado em §4.15 |
+| [D16](#d16--o-fixture-do-braço-postgres-estava-quebrado-desde-antes-da-330) | média | herdado do honeycomb | corrigido, verificado em §5.5 |
+| [D17](#d17--o-gold_tuned-criava-os-índices-antes-da-carga) | média | introduzido nesta branch (T1.4) | corrigido, verificado em §6.1 — script de ponta a ponta e índices do `dm_acme` reconstruídos |
+| [D18](#d18--o-devshm-de-64-mib-derruba-o-vacuum-paralelo-do-postgres) | alta | default do runtime de container | corrigido, verificado — hash join paralelo com pico de 96 MiB em `/dev/shm` |
 
 ### D4 — O nó anuncia a capacidade do host, não a do cgroup
 
@@ -1218,6 +1680,68 @@ teste de T1.2 verifica os prefixos do bucket por outro caminho.
 o contrato de layout, delegando o acesso ao `ports.sh`; `--forward` virou `--abrir`, que chama
 `ports.sh --only console`.
 
+### D17 — O `gold_tuned` criava os índices antes da carga
+
+**Severidade: média. Viés silencioso contra o braço que deveria ser o teto do Postgres.**
+
+`03_pg_tuned.sql` criava o B-tree do painel e o BRIN na tabela particionada **vazia** e só depois fazia
+o `INSERT ... ORDER BY "timestamp"`. As duas consequências apareceram ao montar o braço sobre o dado
+real, com 7,1 M de linhas:
+
+| Índice | Criado antes do `INSERT` | Reconstruído | Por quê |
+|---|---:|---:|---|
+| B-tree do painel, 3 partições | 706 MB | **401 MB** — o mesmo do `public` | Linhas chegam em ordem de `timestamp`, mas a chave começa por `filial`: inserção fora de ordem, páginas meio vazias |
+| BRIN de 2026-08 | 24 kB | 160 kB | Faixas de blocos preenchidas depois da criação ficam sem resumo até um `VACUUM`, e faixa sem resumo é sempre varrida |
+| BRIN de 2026-09 | 24 kB | 56 kB | Idem |
+
+Nada falha: o índice existe, o planner o usa, e o braço tunado só fica mais lento do que deveria. Numa
+comparação cujo argumento é *"mesmo o Postgres no limite perde"*, isso é viés a favor da tese.
+
+**Correção:** os dois `CREATE INDEX` foram movidos para depois do `INSERT`, no script. No `dm_acme`,
+`REINDEX TABLE gold_tuned.fact_200_cep` (22 s) reconstruiu os índices sem recriar a tabela. O script
+corrigido, executado em `dm_globex` numa transação desfeita, produz exatamente os mesmos tamanhos.
+
+**Alcance no E1:** a sonda de T-E1-41 a T-E1-43 ([§4.12](#412-t14-complemento--o-braço-pg-tuned)) usou
+a ordem antiga, então os tamanhos de índice registrados ali estão inflados. A direção dos resultados
+não muda: a correção só diminui os índices do braço que já tinha vencido.
+
+### D18 — O `/dev/shm` de 64 MiB derruba o VACUUM paralelo do Postgres
+
+**Severidade: alta para o E3. Falha real hoje, e risco de falha no meio do benchmark.**
+
+```
+INFO:  vacuuming "dm_acme.public.fact_200_cep"
+ERROR:  could not resize shared memory segment "/PostgreSQL.1168348932" to 67128960 bytes: No space left on device
+```
+
+O `/dev/shm` do container é o padrão do runtime, **64 MiB**. Com `dynamic_shared_memory_type = posix`, o
+Postgres aloca ali a memória dinâmica compartilhada dos processos paralelos. O `VACUUM` manual de uma
+tabela com 2 índices usa workers paralelos, e o segmento tem o tamanho do `maintenance_work_mem`
+(64 MB), mais do que cabe.
+
+O autovacuum não é afetado, porque nunca roda em paralelo, e foi por isso que nada apareceu até aqui.
+O risco para a T3.2 é o **hash join paralelo**, que coloca a tabela de hash no mesmo lugar: até
+`work_mem` × `hash_mem_multiplier` × (workers + 1) = 24 MB × 2 × 3 ≈ 144 MB. Uma query do benchmark
+pode falhar com o mesmo erro, ou o planner pode ser forçado a outro plano, e o Postgres sairia medido
+em desvantagem por uma limitação de infraestrutura que produção não tem.
+
+**Contorno usado em §6.2:** `VACUUM (PARALLEL 0, ...)`, que não aloca o segmento.
+
+**Correção:** um `emptyDir` com `medium: Memory` e `sizeLimit: 256Mi` montado em `/dev/shm`, no
+`infra/postgres/postgres-statefulset.yaml`. A memória usada ali conta dentro do limite de 1792Mi do
+pod. Aplicada em 2026-09-11 com autorização do usuário: o pod foi recriado e o dado ficou no PVC.
+
+| Verificação depois do reinício | Resultado |
+|---|---|
+| `df -h /dev/shm` | `tmpfs 256.0M` |
+| Dado | 7 114 401 linhas em `dm_acme` e `dm_globex`, mesmo `sum(valor)`; `gold_tuned` com 7 114 401 |
+| `VACUUM (PARALLEL 2, INDEX_CLEANUP ON)` | 1 worker paralelo lançado, sem erro |
+| Hash join paralelo `public` × `gold_tuned` por `hk_business_id`, com `work_mem = 24MB` | 2 workers, 32 lotes, 21 s, **pico de 96 MiB em `/dev/shm`** |
+
+O pico de 96 MiB é a prova: com o limite antigo de 64 MiB essa query falharia com o mesmo erro do
+`VACUUM`. O teto novo cobre o orçamento calculado de ~144 MB. Se a T3.2 subir o `work_mem`, o teto
+precisa subir junto, na proporção de `work_mem` × 2 × 3.
+
 ---
 
 ## 8. O que NÃO foi testado
@@ -1231,7 +1755,8 @@ Sem isto, os resultados acima valem menos do que parecem.
 | `profile.sh quiesce` com workload real | Airflow e MongoDB não existem | O `scale --replicas=0` e a restauração nunca escalaram nada de verdade |
 | `quiesce` bloqueando por Spark ativo | Não há Spark Operator utilizável | Só a lógica de filtro foi testada, sinteticamente |
 | Comportamento sob pressão de memória | Nada consumiu o nó | D4 foi medido, mas o OOM que ele prevê não foi provocado |
-| Qualquer coisa de E2 e E3 | Nada implementado | Tudo |
+| Lacunas de E2 | Ver [§5.7](#57-o-que-continua-sem-cobertura) | Recarga sobre dado real, tenant globex, comparação de valores |
+| Qualquer coisa de E3 | Não iniciado | Tudo |
 | Recuperação do RBAC em réplica nova | 1 réplica só | O item 3 do [ADR-003](decisoes/ADR-003-rbac-multi-tenant.md) segue sendo teoria |
 
 ---
@@ -1252,6 +1777,10 @@ ocasião. Nenhum atrapalha uma reexecução: todos os caminhos testados são ide
 | Job `minio-provision` | Sem TTL; precisa de remoção manual para reexecutar |
 | `~/.datamart-poc-profile.state` | `profile.sh`, vazio |
 | `~/.cache/datamart-poc/ports/` | `ports.sh` — arquivos de PID e log; fora do cluster |
+| Pods `pytest-t21`, `pytest-t23`, `pytest-t24`, `pytest-t26` | E2 — pods efêmeros das suítes, todos `Completed` |
+| ~~Schemas `teste_t24*` em `dm_acme`~~ | Removidos em 2026-09-11, com autorização |
+| Database `bench_carga` no ClickHouse | Análise de carga: `fato_rp`, `fato_rmt_dash`, `fato_rmt_id`, `fato_rmt_pk` e 6 stagings `stg_rp_*`, 3,2 GiB — [análise](analise-estrategia-carga-clickhouse.md) |
+| `~/silver-ref/dw_andon_peso/` | E2 — cópia local incompleta, 20 GiB; fora do cluster. A referência válida é `~/silver-ref/dw_andon_peso-v3321/` |
 
 O `minio-provision` sem TTL é uma aspereza: `kubectl apply` num Job concluído com spec alterada falha por
 imutabilidade. Vale copiar o `ttlSecondsAfterFinished` do `ch-rbac` para ele em T1.2.

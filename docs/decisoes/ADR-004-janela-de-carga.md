@@ -2,8 +2,8 @@
 
 | Campo | Valor |
 |---|---|
-| Status | **Pendente de medição** — decidida no portão [E3](../epicos/E3-validacao.md) T3.0 |
-| Data | 2026-09-04 |
+| Status | **Aceita** em 2026-09-11 — POC com `REPLACE PARTITION`; produção futura com `ReplacingMergeTree` por watermark (B2) |
+| Data | 2026-09-04, decidida em 2026-09-11 no portão [E3](../epicos/E3-validacao.md) T3.0 |
 | Task | [E2](../epicos/E2-execucao.md) T2.2, T2.3 |
 
 ## Contexto
@@ -63,11 +63,31 @@ WHERE ts >= <janela típica de execução>
 
 ## Resultado
 
-> **A preencher no portão T3.0.**
->
-> - Meses tocados por execução típica: `____`
-> - Estratégia escolhida: `____`
-> - Data da medição: `____`
+Medido em 2026-09-11. Análise completa, com as medições de escrita e leitura dos dois métodos, em
+[analise-estrategia-carga-clickhouse.md](../analise-estrategia-carga-clickhouse.md).
+
+| Pergunta | Resposta medida |
+|---|---|
+| Meses tocados por execução da POC | **1**, por construção: a DAG deriva uma janela de um mês do `data_interval` |
+| Meses tocados por execução em produção | **2**: um mês continua recebendo linhas por até 14 dias depois de fechado |
+| Atraso de chegada, 5 filiais, 9,7 M de linhas | p50 7,9 h · p99 213 h · 12,3 % com mais de 3 dias · 0,016 % com mais de 14 dias |
+| Custo do `REPLACE PARTITION` no pico | staging de 3,48 M linhas em ~3,1 s; troca em 11 a 37 ms |
+| Custo de leitura do `ReplacingMergeTree` | `FINAL` de 3,5 a 7× o `MergeTree` no painel enquanto a partição tem várias parts; igual com uma part |
+
+### Decisão do usuário
+
+1. **Na POC fica `REPLACE PARTITION`**, como está. O foco da POC é comparar a leitura entre ClickHouse
+   e Postgres, e a troca de partição entrega uma tabela sem duplicata e lida sem `FINAL`.
+2. **Em produção será implementado o B2:** `ReplacingMergeTree` carregado a cada 6 h por **watermark
+   de `load_dts`**, com sobreposição para os replicadores, chave de ordenação só com colunas imutáveis,
+   consolidação por idade e `final = 1` no perfil de leitura. Custo estimado em §12 da análise.
+3. **Janela por data do evento está descartada** para qualquer estratégia: com 3 dias de margem perde
+   12,3 % das linhas em silêncio.
+
+### Consequência para o benchmark
+
+A T3.2 mede o ClickHouse lendo uma tabela `MergeTree` limpa. Com o B2 em produção, as consultas do mês
+corrente vão pagar o `FINAL`. Isso entra nas ressalvas do `RESULTADO.md` (T3.4), com o número medido.
 
 ## Consequências da escolha por `REPLACE PARTITION`
 

@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 3.0 |
-| Data | 2026-09-09 |
-| Status | Replanejado — não iniciado |
+| Versão | 3.1 |
+| Data | 2026-09-11 |
+| Status | **Encerrado** — Go/No-Go 10 de 10 |
 | Objetivo | Carregar os dois datamarts **direto da silver**, pela mesma query, na mesma janela |
 | Depende de | [E1](E1-infraestrutura.md) completo ✅ |
 | Bloqueia | E3 inteiro |
@@ -156,7 +156,7 @@ Na ordem de execução. A numeração é de criação, não de ordem. **T2.7 nã
 
 | Ordem | Task | Entrega | Bloqueia |
 |---|---|---|---|
-| 1 | [T2.1](#t21--re-sync-com-honeycombmain) | Re-sync de `spark-source-code/` com `honeycomb@main` | todas |
+| 1 | [T2.1](#t21--re-sync-com-honeycomb-330) | Re-sync de `spark-source-code/` com a tag `3.3.0` do honeycomb | todas |
 | 2 | [T2.5](#t25--contrato-de-entrada-da-silver) | Contrato de entrada da silver — documentação | T2.3, T2.4 |
 | 3 | [T2.2](#t22--janela-de-carga) | Query parametrizada por janela — corrige **D1** | T2.3, T2.4 |
 | 4 | [T2.3](#t23--braço-clickhouse) | `RepositoryDatamartClickhouse` + troca de partição | T3.1 |
@@ -222,7 +222,7 @@ docker save honeycomb:poc | docker exec -i minikube docker load
 
 > **O `minikube image load` é no-op silencioso quando a tag já existe no nó**, mesmo com
 > `--overwrite=true`. Com `imagePullPolicy: Never`, o pod acha a tag e roda o código velho — job verde,
-> evidência inválida. Ver [incidente #12](../TROUBLESHOOTING.md#12-minikube-image-load-nao-substitui-tag-existente).
+> evidência inválida. Ver [incidente #12](../TROUBLESHOOTING.md#12-minikube-image-load-não-substitui-tag-existente).
 
 ### Artefatos
 
@@ -373,7 +373,7 @@ Os números de (2) são iguais. É este assert que substitui a garantia estrutur
 |---|---|---|
 | Janela não propagada até a query | Job roda e carrega o recorte errado, **sem erro** | Logar a query final resolvida, uma vez, no início do job |
 | Fallback para `current_timestamp()` | Divergência intermitente entre os braços, irreprodutível | Abortar quando o parâmetro faltar (ação 4) |
-| Janela fora do intervalo do dado | Carga vazia com **sucesso** | Distribuição de `data_hora` medida em [T3.0](E3-validacao.md#t30--portão-de-janela), que roda antes |
+| Janela fora do intervalo do dado | Carga vazia com **sucesso** | Conferir a janela contra a distribuição de `data_hora` da v3321 — 2025-08 a 2026-09, em [TESTES §5.8](../TESTES.md#58-t26--aceite-sobre-o-snapshot-fixado) |
 
 ---
 
@@ -631,40 +631,45 @@ derrubado quando alguém acrescentar a segunda tabela.
 |---|---|
 | `spark-<tenant>-config` / `-secret` | O `spark-secrets` estava fixo no acme. Sem separar, o placeholder `TENANT` do manifesto não teria o que resolver |
 | Catálogo ClickHouse na `SparkSessionFactory` | **Lacuna de T2.3**: o teste de integração montava a própria `SparkSession`. Num job real o `writeTo` não resolveria o nome da tabela |
-| Delta e S3A no `sparkConf` | O `spark-defaults.conf` da imagem é sombreado pelo Spark-on-K8s — [incidente #13](../TROUBLESHOOTING.md#13-spark-defaultsconf-da-imagem-nao-chega-ao-driver-sob-o-operator) |
+| Delta e S3A no `sparkConf` | O `spark-defaults.conf` da imagem é sombreado pelo Spark-on-K8s — [incidente #13](../TROUBLESHOOTING.md#13-spark-defaultsconf-da-imagem-não-chega-ao-driver-sob-o-operator) |
 | `manifests/` no ConfigMap das DAGs | `--from-file` de diretório ignora subpasta; o initContainer recoloca o template onde a DAG o procura |
 
 ### Aceite
 
 ```bash
 kubectl -n airflow exec airflow-scheduler-0 -c scheduler -- \
-  airflow dags trigger k8s_acme_datamart -e 2026-08-10T00:00:00+00:00
+  airflow dags trigger k8s_acme_datamart
 ```
+
+Sem `-e`, a janela é o mês do instante do trigger. Para carregar outro mês, passe um `-e` dentro dele,
+posterior ao `start_date` ([incidente #14](../TROUBLESHOOTING.md#14-dagrun-verde-sem-executar-nenhuma-task))
+e já passado ([incidente #16](../TROUBLESHOOTING.md#16-dagrun-com-logical_date-futura-fica-queued-até-a-data-chegar)).
+
 1. As duas tasks concluem `success`;
 2. Postgres e ClickHouse têm a **mesma contagem** na partição carregada;
 3. `airflow dags list-import-errors` continua vazio.
 
-**Parcial em 2026-09-10.** As duas DAGs importam sem erro e o CR renderizado prova a cadeia:
+**Fechado em 2026-09-11**, sobre o snapshot v3321 de `dw_andon_peso`:
 
-```
---pipeline datamart_pg --tenant_name acme --filial_name acme --table_name fact_200_cep
---janela_inicio 2025-08-01 00:00:00 --janela_fim 2025-09-01 00:00:00
---colunas_obrigatorias timestamp filial banco unidade_producao_id
---primary_key filial banco andon_peso_id
-```
+| Item | Resultado |
+|---|---|
+| (1) | Run `manual__2026-09-11T12:33:58`, 5 tasks `success`. `carga_postgres` 7,5 min, `carga_clickhouse` 8,7 min |
+| (2) | **1 039 682** linhas nos dois lados, iguais filial a filial; `count(distinct hk_business_id)` idem |
+| (3) | `No data found` |
 
-Janela alinhada ao mês a partir de `data_interval_start=2025-08-21`, `VERSION`→`poc` e `TENANT`→`acme`
-nas três referências de `envFrom`. O job planeja a query, resolve o Delta e roda 15 stages.
+A janela foi `2026-09-01 00:00:00` → `2026-10-01 00:00:00`, e o ClickHouse ficou com uma partição ativa,
+`202609`. Detalhe em [TESTES §5.8](../TESTES.md#58-t26--aceite-sobre-o-snapshot-fixado).
 
-Os itens (1) e (2) não fecham: `dw_andon_peso` tem 2 dos 5 arquivos do snapshot ausentes do bucket e a
-carga morre em `SparkFileNotFoundException` — dado, não código
-([incidente #15](../TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver)).
+A primeira tentativa, em 2026-09-10, chegou a 15 stages e morreu em `SparkFileNotFoundException`: a
+cópia da silver estava sem arquivos do snapshot. Era dado, não código
+([incidente #15](../TROUBLESHOOTING.md#15-sparkfilenotfoundexception-na-silver)). O CR renderizado
+naquela execução já provava a cadeia da DAG até a borda do dado.
 
 ### Riscos {#riscos-4}
 
 | Risco | Sinal | Mitigação |
 |---|---|---|
-| Silver alterada durante o DagRun | Contagens divergentes entre os braços, irreprodutível | Premissa 3. Carregar a silver com a DAG pausada; o aceite (2) acusa |
+| Silver alterada durante o DagRun | Contagens divergentes entre os braços, irreprodutível | Premissa 3. A silver do cluster é um snapshot fixado (v3321), que nada reescreve. Se for recopiada, fazer com a DAG pausada; o aceite (2) acusa |
 | Os dois drivers Spark simultâneos | `OOMKilled` no nó, ou pod `Pending` sem recurso | Tasks em sequência, e `max_active_tis_per_dag=1` dentro de cada uma |
 | Trigger com `logical_date` anterior ao `start_date` | DagRun **verde** com zero task instance | `start_date` em 2025-01-01, antes do dado mais antigo da silver — [incidente #14](../TROUBLESHOOTING.md#14-dagrun-verde-sem-executar-nenhuma-task) |
 | SA errada no RoleBinding | `serviceaccount:airflow:airflow-worker cannot create sparkapplications` | RoleBinding para `airflow-scheduler` (E1 T1.7) |
@@ -679,16 +684,20 @@ carga morre em `SparkFileNotFoundException` — dado, não código
 
 ## Checklist Go/No-Go do épico
 
-- [ ] `pytest -q` da suíte unitária passa após o rsync, sem alteração
-- [ ] As 4 tabelas silver estão em Delta sob `business_datavault_data-bee/`, com os nomes `dw_` do contrato
-- [ ] As 4 têm `id`, `unidade_origem` e `dataset_origem`
-- [ ] A query aborta quando `JANELA_INICIO`/`JANELA_FIM` não são informados
-- [ ] Recarregar a mesma janela duas vezes não muda a contagem da partição no ClickHouse
-- [ ] `count(distinct hk_business_id) == count(*)` nos dois destinos
-- [ ] Postgres e ClickHouse têm a **mesma contagem** para a mesma janela
-- [ ] `pytest -m integration` do repositório ClickHouse passa, incluindo recarga
-- [ ] O diff entre os dois repositórios toca exclusivamente `write()`
-- [ ] Um trigger na DAG carrega os dois destinos
+Verificado em 2026-09-11. Cada item aponta para onde a saída está registrada.
+
+- [x] `pytest -q` da suíte unitária passa após o rsync, sem alteração — 173 passed, igual à tag pura (T2.1)
+- [x] As 4 tabelas silver estão em Delta sob `business_datavault_data-bee/`, com os nomes `dw_` do contrato (T2.5)
+- [x] As 4 têm `id`, `unidade_origem` e `dataset_origem` — T2.5, e a junção completou sobre o dado real (T2.6)
+- [x] A query aborta quando `JANELA_INICIO`/`JANELA_FIM` não são informados (T2.2)
+- [x] Recarregar a mesma janela duas vezes não muda a contagem da partição no ClickHouse — T-E2-02, sobre
+      DataFrame sintético, e depois sobre o dado real, nos dois destinos
+      ([TESTES §6.2](../TESTES.md#62-recarga-sobre-dado-existente--o-custo-do-merge))
+- [x] `count(distinct hk_business_id) == count(*)` nos dois destinos — 1 039 682 = 1 039 682 (T2.6)
+- [x] Postgres e ClickHouse têm a **mesma contagem** para a mesma janela — 1 039 682, filial a filial (T2.6)
+- [x] `pytest -m integration` do repositório ClickHouse passa, incluindo recarga — 6 passed (T2.4)
+- [x] O diff entre os dois repositórios toca exclusivamente `write()` — asserção de identidade (T2.4)
+- [x] Um trigger na DAG carrega os dois destinos (T2.6)
 
 ## O que este épico NÃO prova
 
@@ -698,5 +707,8 @@ carga morre em `SparkFileNotFoundException` — dado, não código
   evidência a favor nem contra ela.
 - **Que os dois braços leram exatamente as mesmas linhas.** Prova que leram o **mesmo recorte declarado**
   e chegaram à mesma contagem. Com a silver parada isso é equivalente; com a silver em movimento, não.
+  Na execução que fechou o épico ela estava parada: um snapshot fixado, que nada reescreve.
+- **Que a recarga é idempotente sobre o dado real** — no fechamento do épico, só em teste de integração.
+  Coberto depois, na preparação do E3 ([TESTES §6.2](../TESTES.md#62-recarga-sobre-dado-existente--o-custo-do-merge)).
 - **Desempenho de carga.** A POC mede latência de **leitura** no destino, não velocidade de ingestão.
 - **Que o patch é aceitável upstream.** É candidato. Quem decide é a revisão do honeycomb.
