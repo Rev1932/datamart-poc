@@ -29,16 +29,6 @@ CREATE TABLE gold_tuned.fact_200_cep (
     LIKE :origem INCLUDING DEFAULTS
 ) PARTITION BY RANGE ("timestamp");
 
--- Índice do painel, o MESMO de 02_indices.sql. Sem ele o braço tunado perderia para o
--- braço simples, e a comparação viraria um espantalho ao contrário.
-CREATE INDEX ix_tuned_dash
-    ON gold_tuned.fact_200_cep (filial, banco, unidade_producao_id, "timestamp");
-
--- BRIN sobre a coluna de particionamento. Só rende porque o INSERT abaixo grava em ordem
--- de timestamp: BRIN guarda min/max por faixa de blocos e é inútil em tabela embaralhada.
-CREATE INDEX ix_tuned_brin
-    ON gold_tuned.fact_200_cep USING brin ("timestamp") WITH (pages_per_range = 32);
-
 -- Uma partição por mês presente na origem. \gexec: o psql não substitui :origem dentro
 -- de um bloco DO, então a geração fica em SQL puro.
 WITH lim AS (
@@ -60,6 +50,18 @@ CREATE TABLE gold_tuned.fact_200_cep_default
 -- existe, é consultado, e não descarta bloco nenhum.
 INSERT INTO gold_tuned.fact_200_cep
 SELECT * FROM :origem ORDER BY "timestamp";
+
+-- Índices só depois do INSERT: antes dele, o B-tree sai ~1,8× maior e o BRIN fica sem resumo.
+
+-- Índice do painel, o MESMO de 02_indices.sql. Sem ele o braço tunado perderia para o
+-- braço simples, e a comparação viraria um espantalho ao contrário.
+CREATE INDEX ix_tuned_dash
+    ON gold_tuned.fact_200_cep (filial, banco, unidade_producao_id, "timestamp");
+
+-- BRIN sobre a coluna de particionamento. Só rende porque o INSERT acima grava em ordem
+-- de timestamp: BRIN guarda min/max por faixa de blocos e é inútil em tabela embaralhada.
+CREATE INDEX ix_tuned_brin
+    ON gold_tuned.fact_200_cep USING brin ("timestamp") WITH (pages_per_range = 32);
 
 ANALYZE gold_tuned.fact_200_cep;
 
