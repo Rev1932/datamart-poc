@@ -49,9 +49,9 @@ spec:
           # postgresql.conf, e um config_file próprio exigiria replicar hba_file e ident_file.
           args:
             - -c
-            - shared_buffers=384MB
+            - shared_buffers=640MB
             - -c
-            - effective_cache_size=1GB
+            - effective_cache_size=1792MB
             - -c
             - work_mem=24MB
             - -c
@@ -81,8 +81,8 @@ spec:
               cpu: "300m"
               memory: "640Mi"
             limits:
-              cpu: "2"
-              memory: "1792Mi"
+              cpu: "3"
+              memory: "3Gi"
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "dm_app", "-d", "postgres"]

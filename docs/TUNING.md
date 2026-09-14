@@ -82,12 +82,14 @@ aparece depois, num número errado ou num OOM.
 ## 4. PostgreSQL — servidor
 
 Aplicados por `-c chave=valor` no `infra/postgres/postgres-statefulset.yaml`. Container com limite de
-**1792Mi**.
+**3Gi e 3 CPU**, igual ao ClickHouse, desde a T3.2 — antes eram 1792Mi e 2 CPU. Com o limite antigo a
+tabela de 2,5 GB não cabia no cache do pod e o braço `pg` relia o disco a cada consulta (q01 em 16,5 s,
+contra 2,3 s depois). Os dois settings de memória subiram na mesma proporção.
 
 | Setting | Valor | Default | Por quê | O que quebra sem isso |
 |---|---|---|---|---|
-| `shared_buffers` | **384MB** | 128MB | ~21% do limite do container. A regra usual é 25% da RAM; aqui o teto é o cgroup, não a RAM do nó | Cache pequeno demais: toda leitura repetida volta ao disco e o braço `pg` fica artificialmente lento |
-| `effective_cache_size` | **1GB** | 4GB | Diz ao planner quanto cache existe **no total**. Com 4GB declarados num container de 1,75Gi, o planner superestima e prefere index scan onde seq scan seria melhor | Escolha de plano enviesada — e num benchmark isso é pior que lentidão, é medida errada |
+| `shared_buffers` | **640MB** | 128MB | ~21% do limite do container. A regra usual é 25% da RAM; aqui o teto é o cgroup, não a RAM do nó | Cache pequeno demais: toda leitura repetida volta ao disco e o braço `pg` fica artificialmente lento |
+| `effective_cache_size` | **1792MB** | 4GB | Diz ao planner quanto cache existe **no total**, ~58% do limite. Com 4GB declarados num container de 3Gi, o planner superestima e prefere index scan onde seq scan seria melhor | Escolha de plano enviesada — e num benchmark isso é pior que lentidão, é medida errada |
 | `work_mem` | **24MB** | 4MB | Memória por operação de sort/hash. As queries do painel fazem `GROUP BY`; com 4MB o agrupamento derrama para disco | `external merge Disk` no `EXPLAIN`, e a latência medida vira ruído de I/O temporário |
 | `random_page_cost` | **1.1** | 4.0 | O default assume disco rotacional, onde acesso aleatório custa 4× o sequencial. Aqui é SSD | O planner evita index scan e escolhe seq scan. **Este é o setting que mais distorce comparação de datamart** |
 | `max_connections` | **40** | 100 | Cada conexão reserva `work_mem` no pior caso. 100 × 24MB = 2,4 GiB, acima do limite do container | OOM sob concorrência, justamente no teste de 8 clientes simultâneos |
@@ -104,7 +106,7 @@ obrigaria a replicar `hba_file` e `ident_file`.
 Pré-voo que valida os argumentos sem subir o servidor:
 
 ```bash
-postgres -C shared_buffers -c shared_buffers=384MB -c random_page_cost=1.1 ...
+postgres -C shared_buffers -c shared_buffers=640MB -c random_page_cost=1.1 ...
 ```
 
 ---
