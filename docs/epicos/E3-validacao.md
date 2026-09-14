@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.1 |
-| Data | 2026-09-11 |
-| Status | Não iniciado — pré-requisitos no [estado de partida](../TODO.md#estado-de-partida--o-que-o-e2-entrega-ao-e3) |
+| Versão | 1.2 |
+| Data | 2026-09-14 |
+| Status | **Encerrado em 2026-09-14** — T3.0, T3.1, T3.2 e T3.4 fechadas; T3.3 fora de escopo (decisão do usuário) |
 | Objetivo | Produzir `benchmark/results/RESULTADO.md` — o material da apresentação |
 | Depende de | [E2](E2-execucao.md) completo ✅ |
 | Bloqueia | — |
@@ -47,7 +47,7 @@ Projeção de custo em produção, dimensionamento de cluster produtivo, plano d
 | [T3.0](#t30--portão-de-janela) | Distribuição de `timestamp` no incremento real | **Portão** |
 | [T3.1](#t31--portão-de-corretude) | `delta = 0` entre os braços | **Portão** |
 | [T3.2](#t32--suíte-de-leitura) | Latência p50/p95, sequencial e concorrente | Medição |
-| [T3.3](#t33--vizinho-barulhento) | Degradação e recuperação por `QUOTA` | Medição |
+| [T3.3](#t33--vizinho-barulhento) | Degradação e recuperação por `QUOTA` | **Fora de escopo** (decisão do usuário, 2026-09-14) |
 | [T3.4](#t34--relatório) | `RESULTADO.md` | Entrega |
 
 ---
@@ -233,9 +233,38 @@ bash benchmark/report.sh
 Desvio de p95 < 30% entre rodadas idênticas. Desvio maior significa ruído de fundo — investigar antes de
 publicar.
 
+> **Revisto em 2026-09-14** (decisão do usuário, ver a tabela abaixo): o critério passou a ser **desvio de
+> p50 < 30 % entre rodadas com `-c 1`**, com o p95 publicado como faixa e o `-c 8` como indicativo. O
+> critério original foi investigado, como pede o parágrafo acima, e a causa do ruído é o ambiente, não o
+> motor.
+
+### Desvios da implementação em relação a esta especificação
+
+Registrados em 2026-09-14, com as decisões do usuário. A execução está em
+[TESTES §6.5](../TESTES.md#65-t32--suíte-de-leitura).
+
+| Especificado | Implementado | Por quê |
+|---|---|---|
+| `.pgt` só em q04 e q05, em arquivo próprio | Os três braços rodam as 5 consultas; `pgt` é o `.pg` com `search_path = gold_tuned` | Mesma query, sem arquivo duplicado, e mais evidência pelo mesmo custo |
+| Instrumentação do ClickHouse por `system.query_log` | Eventos `SelectedRows`, `SelectedBytes` e `MemoryTrackerPeakUsage` informados pelo cliente | O `query_log` está desligado desde o [D12](../TESTES.md#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) |
+| `read_rows`/`read_bytes` no CSV de tempo | Colunas vazias no CSV de tempo; valores em `instr_<ts>.csv` | Cronometragem e instrumentação são passos separados (Metodologia, item 1) |
+| Leitura com o usuário do tenant | `u_<tenant>_bench`: só `SELECT`, sem cota e sem limites de resultado, tempo e memória | O `p_<tenant>_ro` tem `max_result_rows = 200000` e cota por minuto; a q05 (494 mil linhas) falhava e o `-c 8` mediria a cota. O Postgres não tem limite equivalente. Decisão do usuário |
+| Recursos como no orçamento do E1 | Postgres igualado ao ClickHouse: 3 CPU, 3 GiB, `shared_buffers` 640MB | Com 1,75 GiB a tabela não cabia no cache e o `pg` relia o disco. Decisão do usuário: "mesmo hardware" |
+| Clientes sem local definido | Pods `bench-cliente-pg` e `bench-cliente-ch` (`benchmark/clientes.yaml`) | A CPU do cliente não entra no limite do motor. Decisão do usuário |
+| `DISCARD ALL` + restart no modo frio | Restart do pod `postgres-0` antes de **cada** execução fria de `pg` e `pgt` | Uma consulta fria esquentaria o cache da seguinte |
+| — | `psql` com `FETCH_COUNT` e `cursor_tuple_fraction = 1` | Sem cursor, o psql guarda o resultado inteiro da q05 na memória; o `cursor_tuple_fraction` mantém o plano de um `SELECT` comum |
+| — | `--paridade` antes de medir | Os três braços precisam devolver o mesmo resultado, senão a suíte mede trabalhos diferentes. Pegou dois defeitos antes da primeira medição |
+| `-r 10` | `-r 30` com `-c 1`; `-r 10` com `-c 8` | Com 10 amostras, o p95 pelo rank mais próximo é o próprio máximo, e uma execução lenta o move sozinha |
+| Braços alternados a cada consulta | Um braço inteiro por vez: todas as consultas de `pg`, depois `pgt`, depois `ch` | `pg` (3,3 GB) e `pgt` (2,8 GB) dividem um pod de 3 GiB. Alternar os braços faz um expulsar o cache do outro, e a latência passa a depender da ordem |
+| **Aceite: desvio de p95 < 30 %** | **Desvio de p50 < 30 % com `-c 1`**; p95 apresentado como faixa entre rodadas; `-c 8` indicativo | Duas execuções mostraram que, neste ambiente (4 vCPU no WSL2), o p95 oscila de 30 % a 120 % entre rodadas enquanto o p50 fica estável, e que com `-c 8` o cliente disputa CPU com o motor. A diferença entre os motores (9 a 57×) é muito maior que essa oscilação. Decisão do usuário, 2026-09-14 |
+
 ---
 
 ## T3.3 — Vizinho barulhento
+
+> **Retirada do escopo em 2026-09-14, por decisão do usuário.** O objetivo da POC é comparar a
+> performance entre os bancos; a concorrência entre tenants fica de fora. O texto abaixo fica como
+> registro do que foi planejado. O que se sabia antes da decisão está na seção 7 do `RESULTADO.md`.
 
 ### Roteiro
 
@@ -278,7 +307,7 @@ primeiro.
 | 4 | I/O: `read_bytes` e `read_rows` por query | É o que **explica** a tabela 3. Sem ela o ganho parece mágica |
 | 5 | Compressão em disco: `pg_total_relation_size` × `sum(bytes_on_disk)` de `system.parts` | Frequentemente o número isolado mais convincente |
 | 6 | q05 (`SELECT *`) destacada | Põe a decisão sobre o framework na mesa com um número |
-| 7 | Vizinho barulhento, antes e depois da quota | Responde à pergunta de multi-tenant |
+| 7 | Vizinho barulhento, antes e depois da quota — **fora de escopo**: a seção registra o que existe e o que não foi medido | Responde à pergunta de multi-tenant |
 | 8 | Ressalvas | Ver abaixo |
 
 Mais um gráfico de barras ASCII por query, para colar num deck sem ferramenta.
@@ -304,10 +333,14 @@ Mais um gráfico de barras ASCII por query, para colar num deck sem ferramenta.
 
 ## Checklist Go/No-Go do épico
 
-- [ ] [ADR-004](../decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido
-- [ ] `bash benchmark/compare-counts.sh` — `delta = 0` em toda linha
-- [ ] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam
-- [ ] Suíte rodada com `-c 1` e `-c 8`, desvio de p95 < 30% entre rodadas idênticas
-- [ ] `bash benchmark/noisy-neighbour.sh` — p95 degrada e volta após a quota
-- [ ] `RESULTADO.md` com as 8 seções, incluindo a de ressalvas
-- [ ] Nenhuma afirmação no relatório que a seção "o que a POC não prova" contradiga
+Verificado em 2026-09-14.
+
+- [x] [ADR-004](../decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido
+- [x] `bash benchmark/compare-counts.sh` — `delta = 0` em toda linha
+- [x] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam (e o leitor do globex negado no acme)
+- [x] Suíte rodada com `-c 1` e `-c 8` — aceite revisto pelo usuário: desvio de **p50** < 30 % com `-c 1`,
+      15 de 15; `-c 8` indicativo
+- [ ] ~~`bash benchmark/noisy-neighbour.sh` — p95 degrada e volta após a quota~~ — fora de escopo (T3.3)
+- [x] `RESULTADO.md` com as 8 seções, incluindo a de ressalvas
+- [x] Nenhuma afirmação no relatório que a seção "o que a POC não prova" contradiga — o
+      [ARQUITETURA §7](../ARQUITETURA.md#7-o-que-esta-poc-não-prova) foi ajustado à retirada da T3.3

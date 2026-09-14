@@ -2,5 +2,6 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
-benchmark/results/
+benchmark/results/*
+!benchmark/results/RESULTADO.md
 *.log

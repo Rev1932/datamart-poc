@@ -11,12 +11,13 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | 🟨 | em andamento |
 | 🟥 | bloqueado — a causa fica na linha |
 | ✅ | feito, com o aceite verificado |
+| ⏭️ | retirada do escopo por decisão do usuário — o motivo fica na linha |
 
-**Progresso:** 17 de 20 tasks fechadas. **Épicos 1 e 2 completos** — M1 e M2 atingidos. No E3, **os
-dois portões fecharam**: a T3.0 com a estratégia de carga decidida no ADR-004 (POC com `REPLACE
-PARTITION`, produção futura com B2), e a T3.1 com `delta = 0` nos três braços do `dm_acme` — M3
-atingido. O [estado de partida](#estado-de-partida--o-que-o-e2-entrega-ao-e3) tem os dois tenants
-carregados de 2026-07 a 2026-09, índice do painel e `gold_tuned` aplicados. Próximo: T3.2.
+**Progresso:** 19 de 19 tasks fechadas (a T3.3 saiu do escopo). **POC concluída — M0 a M4 atingidos.** **Épicos 1 e 2 completos** — M1 e M2 atingidos. No E3, os dois
+portões fecharam (T3.0 com o ADR-004, T3.1 com `delta = 0` — M3) e a **T3.2 fechou**: com `-c 1`, o
+ClickHouse fica de 20 a 55 vezes à frente do Postgres no p95, e de 8 a 40 vezes à frente do Postgres
+particionado. A T3.3 saiu do escopo por decisão do usuário, e a T3.4 entregou o
+[`RESULTADO.md`](../benchmark/results/RESULTADO.md).
 
 Execução dos testes registrada em [TESTES.md](TESTES.md), **1 defeito aberto**:
 [D4](TESTES.md#d4--o-nó-anuncia-a-capacidade-do-host-não-a-do-cgroup), sem correção possível e mitigado.
@@ -32,7 +33,7 @@ D16, D17 e D18 foram corrigidos e verificados.
 | **M1 — Stack de pé** | Checklist Go/No-Go de [E1](epicos/E1-infraestrutura.md) — **9 de 9** | ✅ |
 | **M2 — Dado fluindo** | Um trigger no Airflow carrega os dois braços, na mesma janela | ✅ |
 | **M3 — Dado íntegro** | `compare-counts.sh` com `delta = 0` em toda linha | ✅ |
-| **M4 — Evidência pronta** | `benchmark/results/RESULTADO.md` com as 8 seções | ⬜ |
+| **M4 — Evidência pronta** | `benchmark/results/RESULTADO.md` com as 8 seções | ✅ |
 
 M3 é portão duro: sem ele, M4 não começa.
 
@@ -376,7 +377,10 @@ Saem: a DAG de `bronze_silver`, a DAG de gold, o Dataset e os `outlets`, o `expa
 
 ---
 
-## Épico 3 — Validação → [especificação](epicos/E3-validacao.md)
+## ✅ Épico 3 — Validação → [especificação](epicos/E3-validacao.md)
+
+**Encerrado em 2026-09-14.** 4 tasks fechadas e 1 retirada do escopo (T3.3). Entrega:
+[`benchmark/results/RESULTADO.md`](../benchmark/results/RESULTADO.md).
 
 ### Estado de partida — o que o E2 entrega ao E3
 
@@ -414,7 +418,7 @@ independente e só precisa vir antes da T3.3.
       aplicada: `/dev/shm` de 256Mi no Postgres. Um hash join paralelo chegou a 96 MiB ali, o que falharia
       com o limite antigo
 
-**A preparação está completa.** Os dois portões, T3.0 e T3.1, estão fechados. O próximo passo é a T3.2.
+**A preparação está completa.** Os dois portões, a T3.2 e a T3.4 estão fechados; a T3.3 saiu do escopo.
 
 ### ✅ T3.0 — **PORTÃO** de janela
 Aceite: [ADR-004](decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido — 1 partição por
@@ -441,32 +445,57 @@ de falha foi exercitado sobre extratos adulterados, sem tocar nos bancos: `count
 
 > Sem `delta = 0`, T3.2 não roda. Número de performance sobre dado divergente é pior que nenhum número.
 
-### ⬜ T3.2 — Suíte de leitura
-Aceite: desvio de p95 < 30% entre rodadas idênticas
+### ✅ T3.2 — Suíte de leitura
+Aceite (revisto pelo usuário em 2026-09-14): desvio de **p50** < 30 % entre rodadas com `-c 1`, p95 como
+faixa, `-c 8` indicativo — `bash benchmark/report.sh --aceite` → **15 de 15 OK**, exit 0 —
+[TESTES §6.5](TESTES.md#65-t32--suíte-de-leitura)
 
-- [ ] `views/00_views.{pg,ch}.sql`
-- [ ] q01–q03
-- [ ] **q04** — a central: colunas nomeadas de view, filtro, agregação
-- [ ] **q05** — `SELECT *`, a armadilha de propósito
-- [ ] `read-bench.sh`: cronometragem e instrumentação separadas, `query_id` explícito
-- [ ] Modo cold/warm
-- [ ] Modo concorrente `-c N`
-- [ ] `report.sh` com `clickhouse-local`
-- [ ] Rodar com `-c 1` e `-c 8`, após `profile.sh quiesce`
+- [x] `views/00_views.{pg,ch}.sql` — `vw_cep` fina, no padrão das views gold de produção
+- [x] q01–q03
+- [x] **q04** — a central: colunas nomeadas de view, filtro, agregação
+- [x] **q05** — `SELECT *`, a armadilha de propósito
+- [x] `read-bench.sh`: cronometragem e instrumentação separadas, `query_id` explícito, `--paridade`
+- [x] Modo cold/warm — frio reinicia o Postgres antes de cada execução
+- [x] Modo concorrente `-c N`, com o estrangulamento de CPU do cliente registrado por rodada
+- [x] `report.sh` com `clickhouse-local`
+- [x] Rodar com `-c 1` e `-c 8`, após `profile.sh quiesce`
+- [x] `benchmark/tests/` — 9 casos do `report.sh`, 13 do `read-bench.sh`
 
-### ⬜ T3.3 — Vizinho barulhento
-Aceite: p95 degrada sob carga do vizinho e volta após a quota
+| Consulta, `-c 1`, quente | p50 `pg` | p50 `pgt` | p50 `ch` | fator p95 `pg`/`ch` | fator p95 `pgt`/`ch` |
+|---|---:|---:|---:|---:|---:|
+| q01 CEP por unidade | 2 398 ms | 3 502 ms | 76 ms | 28× | 40× |
+| q02 série diária | 3 710 ms | 4 111 ms | 129 ms | 31× | 36× |
+| q03 top produtos | 2 186 ms | 2 355 ms | 98 ms | 20× | 21× |
+| **q04 painel pela view** | 2 060 ms | 357 ms | **31 ms** | **55×** | 8× |
+| q05 `SELECT *` | 2 560 ms | 926 ms | 63 ms | 30× | 11× |
 
-- [ ] Carregar `dm_globex`
-- [ ] `noisy-neighbour.sh` com os 3 pontos de medição
+Três execuções até o aceite. A primeira foi descartada: o cliente do Postgres ficou 54 % do tempo
+estrangulado pelo limite de CPU e o p95 de 10 amostras era o próprio máximo. A segunda mostrou que `pg`
+e `pgt` expulsavam o cache um do outro. A terceira, com um braço por vez, passou.
 
-### ⬜ T3.4 — Relatório
-Aceite: `RESULTADO.md` com as 8 seções, nenhum campo vazio
+### ⏭️ T3.3 — Vizinho barulhento — retirada do escopo
+**Decisão do usuário em 2026-09-14:** o objetivo da POC é a comparação de performance entre os bancos, e
+a comparação de concorrência entre tenants fica de fora.
 
-- [ ] 1 Ambiente · 2 **Corretude** · 3 Latência · 4 I/O
-- [ ] 5 Compressão · 6 q05 destacada · 7 Vizinho barulhento
-- [ ] 8 **Ressalvas** (page cache, minikube, volume, isolamento)
-- [ ] Gráfico de barras ASCII por query
+- [x] Carregar `dm_globex` — feito na preparação do E3
+- [ ] ~~`noisy-neighbour.sh` com os 3 pontos de medição~~ — não será feito
+
+O que fica sem evidência: se a cota `q_<tenant>` da T1.5 protege a latência de um tenant sob a carga de
+outro. A hipótese levantada antes da decisão, não medida, está registrada na seção 7 do `RESULTADO.md`:
+a cota limita volume por minuto, não concorrência, e sozinha não traria o p95 de volta.
+
+### ✅ T3.4 — Relatório
+Aceite: [`benchmark/results/RESULTADO.md`](../benchmark/results/RESULTADO.md) com as 8 seções, nenhum
+campo vazio — a seção 7 registra o que existe e o que não foi medido, porque a T3.3 saiu do escopo
+
+- [x] 1 Ambiente · 2 **Corretude** · 3 Latência · 4 I/O
+- [x] 5 Compressão · 6 q05 destacada · 7 Vizinho barulhento (fora de escopo, com a hipótese não medida)
+- [x] 8 **Ressalvas** (page cache, minikube, volume, isolamento, e mais sete da execução)
+- [x] Gráfico de barras ASCII por query
+- [x] `.gitignore`: `benchmark/results/` segue ignorado, exceto o `RESULTADO.md`
+
+Achado que o relatório destaca e não estava previsto: 85 % do disco do ClickHouse é a `hk_business_id`,
+um hash que o painel não lê. Sem ela, a fato comprime 13 vezes.
 
 ---
 

@@ -228,14 +228,14 @@ Contrato de dimensionamento para T1.4, T1.6 e T1.7. Não são sugestões: são o
 |---|---|---|---|
 | MinIO | 512Mi / 250m | 1Gi / 1 | valor já em uso e testado; não foi reduzido |
 | ClickHouse | 1Gi / 500m | 3Gi / 3 | `max_server_memory_usage` 2 GiB; `mark_cache_size` 384 MiB; system logs desligados |
-| PostgreSQL (braço) | 640Mi / 300m | 1792Mi / 2 | `shared_buffers` 384MB, `effective_cache_size` 1GB |
+| PostgreSQL (braço) | 640Mi / 300m | 3Gi / 3 | `shared_buffers` 640MB, `effective_cache_size` 1792MB; `/dev/shm` 256Mi ([D18](TESTES.md#d18--o-devshm-de-64-mib-derruba-o-vacuum-paralelo-do-postgres)). Igualado ao ClickHouse na T3.2 |
 | MongoDB | 256Mi / 100m | 640Mi / 500m | `--wiredTigerCacheSizeGB 0.25` fixo — é o **mínimo** aceito pelo WiredTiger |
 | Airflow scheduler | 640Mi / 300m | 1280Mi / 2 | LocalExecutor: as tasks rodam neste pod. É **StatefulSet**, não Deployment |
 | Airflow webserver | 768Mi / 100m | 1280Mi / 1 | `webserver.workers` **1** — cada worker gunicorn carrega o DagBag inteiro, ~577 MiB |
 | Airflow metadata PG | 192Mi / 100m | 384Mi / 500m | subchart Bitnami desligado; StatefulSet próprio |
 | spark-operator | 128Mi / 100m | 256Mi / 500m | — |
 | clickhouse-operator | 128Mi / 100m | 256Mi / 500m | — |
-| **soma dos permanentes** | **4,19 GiB / 1850m** | 9,75 GiB / 11,5 | — |
+| **soma dos permanentes** | **4,19 GiB / 1850m** | 11,0 GiB / 12,5 | — |
 | kube-system | ~0,4 GiB / 600m | — | coredns, provisioner, metrics-server |
 
 Spark é transitório e só existe durante a carga:
@@ -321,8 +321,9 @@ gerência vai atacar, e declarar a limitação vale mais que o número.
 
 - **Isolamento de recursos entre tenants.** A pesquisa base (§10.1) classifica database-por-tenant no mesmo
   cluster como *sem* isolamento de recursos, e recomenda instância dedicada por tenant. A demo de vizinho
-  barulhento (T3.3) mostra a degradação e depois o controle por `QUOTA` — o que prova que **o mecanismo de
-  controle existe e funciona**, não que há isolamento forte. A apresentação não pode afirmar o segundo.
+  barulhento (T3.3) foi **retirada do escopo** por decisão do usuário: a POC prova o isolamento de
+  **acesso** entre tenants, mas não mede nem a degradação nem o controle por `QUOTA`. A apresentação não
+  pode afirmar isolamento de recursos, nem que a cota protege a latência.
 - **Comportamento em volume produtivo.** minikube, uma réplica, amostra de dado. As conclusões são de
   **razão entre motores**, não de latência absoluta.
 - **I/O físico frio.** "Cold" aqui significa caches do motor derrubados. O page cache do sistema
