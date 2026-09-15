@@ -291,9 +291,12 @@ KEYED BY user_name FOR INTERVAL 1 MINUTE
         read_rows = 500000000, execution_time = 60
 ```
 
-Esta quota é o mecanismo que a demo de vizinho barulhento ([E3](epicos/E3-validacao.md) T3.3) vai exercitar.
-Ela é **controle de consumo, não isolamento de recursos** — e o relatório precisa dizer isso com essas
-palavras.
+Esta quota é **controle de consumo, não isolamento de recursos**. A T3.3 mediu isso
+([TESTES §6.6](TESTES.md#66-t33--vizinho-barulhento)): um vizinho com 4 consultas pesadas em paralelo gasta
+os 500 M de `read_rows` em 40 a 50 s, pesa com força total nesse trecho de cada minuto, e o p95 do outro
+tenant fica em 16× o isolado. O que protegeu a latência foi `max_threads = 1` com
+`max_concurrent_queries_for_user = 1` (1,02×), que **não** está neste perfil: uma concorrência de 1 rejeita
+o segundo usuário simultâneo do tenant, e o valor de produção não foi medido.
 
 ### Grants em `system`, e o que ficou de fora
 

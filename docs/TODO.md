@@ -13,10 +13,11 @@ Uma task só fecha quando o comando de aceite roda e a saída bate. Fechamento n
 | ✅ | feito, com o aceite verificado |
 | ⏭️ | retirada do escopo por decisão do usuário — o motivo fica na linha |
 
-**Progresso:** 19 de 19 tasks fechadas (a T3.3 saiu do escopo). **POC concluída — M0 a M4 atingidos.** **Épicos 1 e 2 completos** — M1 e M2 atingidos. No E3, os dois
+**Progresso:** 20 de 20 tasks fechadas. **POC concluída — M0 a M4 atingidos.** **Épicos 1 e 2 completos** — M1 e M2 atingidos. No E3, os dois
 portões fecharam (T3.0 com o ADR-004, T3.1 com `delta = 0` — M3) e a **T3.2 fechou**: com `-c 1`, o
 ClickHouse fica de 20 a 55 vezes à frente do Postgres no p95, e de 8 a 40 vezes à frente do Postgres
-particionado. A T3.3 saiu do escopo por decisão do usuário, e a T3.4 entregou o
+particionado. A T3.3 mostrou que a cota por tenant não protege um tenant da carga do vizinho (16×), e que o
+limite de CPU e concorrência protege (1,02×). A T3.4 entregou o
 [`RESULTADO.md`](../benchmark/results/RESULTADO.md).
 
 Execução dos testes registrada em [TESTES.md](TESTES.md), **1 defeito aberto**:
@@ -379,7 +380,7 @@ Saem: a DAG de `bronze_silver`, a DAG de gold, o Dataset e os `outlets`, o `expa
 
 ## ✅ Épico 3 — Validação → [especificação](epicos/E3-validacao.md)
 
-**Encerrado em 2026-09-14.** 4 tasks fechadas e 1 retirada do escopo (T3.3). Entrega:
+**Encerrado em 2026-09-15.** 5 tasks fechadas. Entrega:
 [`benchmark/results/RESULTADO.md`](../benchmark/results/RESULTADO.md).
 
 ### Estado de partida — o que o E2 entrega ao E3
@@ -418,7 +419,7 @@ independente e só precisa vir antes da T3.3.
       aplicada: `/dev/shm` de 256Mi no Postgres. Um hash join paralelo chegou a 96 MiB ali, o que falharia
       com o limite antigo
 
-**A preparação está completa.** Os dois portões, a T3.2 e a T3.4 estão fechados; a T3.3 saiu do escopo.
+**A preparação está completa.** Os dois portões, a T3.2, a T3.3 e a T3.4 estão fechados.
 
 ### ✅ T3.0 — **PORTÃO** de janela
 Aceite: [ADR-004](decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido — 1 partição por
@@ -473,23 +474,39 @@ Três execuções até o aceite. A primeira foi descartada: o cliente do Postgre
 estrangulado pelo limite de CPU e o p95 de 10 amostras era o próprio máximo. A segunda mostrou que `pg`
 e `pgt` expulsavam o cache um do outro. A terceira, com um braço por vez, passou.
 
-### ⏭️ T3.3 — Vizinho barulhento — retirada do escopo
-**Decisão do usuário em 2026-09-14:** o objetivo da POC é a comparação de performance entre os bancos, e
-a comparação de concorrência entre tenants fica de fora.
+### ✅ T3.3 — Vizinho barulhento
+Aceite (revisto pelo usuário em 2026-09-14): a fase 2 degrada o p95 da q04 em 1,3× ou mais, e o melhor
+mecanismo o traz a até 1,3× o isolado — `bash benchmark/noisy-neighbour.sh` → **ACEITE pela fase 4**,
+exit 0 — [TESTES §6.6](TESTES.md#66-t33--vizinho-barulhento)
+
+Saiu do escopo em 2026-09-14, para o `RESULTADO.md` sair no mesmo dia, e voltou por decisão do usuário.
 
 - [x] Carregar `dm_globex` — feito na preparação do E3
-- [ ] ~~`noisy-neighbour.sh` com os 3 pontos de medição~~ — não será feito
+- [x] `noisy-neighbour.sh` com 4 fases: isolado, vizinho sem limite, com a cota da T1.5 e com limite de
+      CPU e concorrência (`u_globex_limitado`)
+- [x] Pod `bench-vizinho-ch`, consulta pesada `queries/vizinho.ch.sql`
+- [x] `benchmark/tests/test_noisy_neighbour.sh` — 10 casos
+- [x] Executar com `profile.sh quiesce`: 2 rodadas × 4 fases × 180 s
 
-O que fica sem evidência: se a cota `q_<tenant>` da T1.5 protege a latência de um tenant sob a carga de
-outro. A hipótese levantada antes da decisão, não medida, está registrada na seção 7 do `RESULTADO.md`:
-a cota limita volume por minuto, não concorrência, e sozinha não traria o p95 de volta.
+| Fase, p95 da q04 | Rodada 1 | Rodada 2 |
+|---|---:|---:|
+| 1 isolado | 44 ms | 41 ms |
+| 2 vizinho sem limite | 20× | 19× |
+| 3 cota da T1.5 | 12× | 19× |
+| 4 CPU e concorrência | **0,93×** | **1,15×** |
+
+A cota estoura por `read_rows` depois de 40 a 50 s de cada minuto, e só nos segundos restantes bloqueia o
+vizinho. O limite de CPU e concorrência deixa o vizinho em uma thread e uma consulta por vez, e rejeita
+61 % das tentativas dele com código 202. A q01 fica no limite do aceite na fase 4: 1,30× nas duas rodadas
+somadas, 1,41× na rodada 2. As fases 2 e 3 da rodada 1 foram interrompidas por uma suspensão do WSL2 e
+não mudam o veredito.
 
 ### ✅ T3.4 — Relatório
 Aceite: [`benchmark/results/RESULTADO.md`](../benchmark/results/RESULTADO.md) com as 8 seções, nenhum
-campo vazio — a seção 7 registra o que existe e o que não foi medido, porque a T3.3 saiu do escopo
+campo vazio. A seção 7 foi escrita primeiro sem a T3.3 e refeita com a medição, em 2026-09-15
 
 - [x] 1 Ambiente · 2 **Corretude** · 3 Latência · 4 I/O
-- [x] 5 Compressão · 6 q05 destacada · 7 Vizinho barulhento (fora de escopo, com a hipótese não medida)
+- [x] 5 Compressão · 6 q05 destacada · 7 Vizinho barulhento
 - [x] 8 **Ressalvas** (page cache, minikube, volume, isolamento, e mais sete da execução)
 - [x] Gráfico de barras ASCII por query
 - [x] `.gitignore`: `benchmark/results/` segue ignorado, exceto o `RESULTADO.md`

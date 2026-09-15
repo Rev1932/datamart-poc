@@ -2,13 +2,13 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.0 |
-| Data | 2026-09-14 |
-| Status | Final para a POC. A seção 7 está fora de escopo por decisão do usuário |
+| Versão | 1.1 |
+| Data | 2026-09-15 |
+| Status | Final para a POC |
 | Pergunta | Quanto um datamart ClickHouse ganha sobre o datamart Postgres atual, lendo o mesmo dado pelas consultas do painel CEP |
 | Ambiente | minikube no WSL2, 4 vCPU e 8 GiB; os dois bancos com 3 CPU e 3 GiB |
 | Dado | `fact_200_cep` do tenant `acme`, 7 114 401 linhas, 2026-07 a 2026-09, 5 filiais |
-| Evidência | [TESTES §6.3](../../docs/TESTES.md#63-t31--portão-de-corretude) (corretude), [TESTES §6.5](../../docs/TESTES.md#65-t32--suíte-de-leitura) (leitura) |
+| Evidência | [TESTES §6.3](../../docs/TESTES.md#63-t31--portão-de-corretude) (corretude), [TESTES §6.5](../../docs/TESTES.md#65-t32--suíte-de-leitura) (leitura), [TESTES §6.6](../../docs/TESTES.md#66-t33--vizinho-barulhento) (vizinho barulhento) |
 
 ---
 
@@ -21,7 +21,7 @@
 4. [I/O — o que explica a latência](#4-io--o-que-explica-a-latência)
 5. [Compressão em disco](#5-compressão-em-disco)
 6. [q05: o `SELECT *` do framework](#6-q05-o-select--do-framework)
-7. [Vizinho barulhento — fora de escopo](#7-vizinho-barulhento--fora-de-escopo)
+7. [Vizinho barulhento](#7-vizinho-barulhento)
 8. [Ressalvas](#8-ressalvas)
 9. [Resumo executivo](#9-resumo-executivo)
 10. [Anexo — como reproduzir](#10-anexo--como-reproduzir)
@@ -36,6 +36,7 @@
 | Gerência | [§9 Resumo executivo](#9-resumo-executivo), depois §3 e §8 |
 | DBA ou quem vai questionar o número | §2 antes de tudo, depois §4 e §8 |
 | Quem vai decidir o framework do painel | §6 |
+| Quem vai decidir o modelo multi-tenant | §7 |
 | Quem vai reproduzir | §1 e §10 |
 
 A ordem das seções é a argumentação: primeiro o ambiente, depois a prova de que os dois bancos têm o
@@ -264,25 +265,54 @@ antes de passar a usar um leitor sem limites. A decisão sobre o framework do pa
 
 ---
 
-## 7. Vizinho barulhento — fora de escopo
+## 7. Vizinho barulhento
 
-**Esta seção não foi medida.** A T3.3 foi retirada do escopo em 2026-09-14, por decisão do usuário: o
-objetivo da POC é comparar a performance entre os bancos, e a concorrência entre tenants fica de fora.
+A pergunta de multi-tenant: se um tenant satura o servidor, o outro sente? E o controle por tenant que a
+POC desenhou devolve a latência? `bash benchmark/noisy-neighbour.sh`, com o dado real nos dois tenants.
 
-O que existe e está verificado:
+| Fase | Quem é o vizinho em `dm_globex` | O que o limita |
+|---|---|---|
+| 1 | Ninguém | — |
+| 2 | 4 consultas pesadas em paralelo, sem filtro, sobre as 7,1 M linhas | Nada |
+| 3 | O mesmo, pelo leitor real do tenant (`u_globex_ro`) | Perfil e cota por minuto da T1.5 |
+| 4 | O mesmo, por um usuário de teste | Uma thread por consulta e uma consulta por vez (`max_threads = 1`, `max_concurrent_queries_for_user = 1`) |
 
-- **Isolamento de acesso entre tenants:** `verify-rbac.sh` 4 de 4. O leitor de cada tenant lê só o próprio
-  database e recebe `ACCESS_DENIED (497)` no outro, testado nos dois sentidos com o dado real.
-- **Mecanismo de controle declarado:** cada tenant tem uma cota por minuto (120 consultas, 500 M de linhas
-  lidas, 60 s de execução) e um perfil com limites de memória, tempo e resultado.
+Em cada fase, o `acme` rodou a q04 e a q01, uma por vez, por 180 s. Duas rodadas. Aceite, decidido pelo
+usuário: o vizinho degrada o p95 da q04 em 1,3× ou mais, e o melhor mecanismo o traz a até 1,3× o isolado.
 
-O que **não** se sabe: se esse mecanismo protege a latência de um tenant quando outro satura o servidor.
-Database por tenant, no mesmo servidor, **não isola recursos**. A hipótese levantada antes da decisão, e
-não medida, é que a cota **não bastaria**: ela limita volume por minuto, não concorrência, e um vizinho
-com consultas pesadas em paralelo gastaria a cota em segundos, pesando com força total nesse trecho de
-cada minuto. Proteger latência exigiria limitar CPU e concorrência por tenant (`max_threads`,
-`max_concurrent_queries_for_user`) ou instância dedicada. O desenho do teste, se voltar ao escopo, está
-no [E3](../../docs/epicos/E3-validacao.md#t33--vizinho-barulhento).
+### Resultado — p95 do `acme`, em ms
+
+| Fase | q04 rodada 1 | q04 rodada 2 | q01 rodada 1 | q01 rodada 2 |
+|---|---:|---:|---:|---:|
+| 1 isolado | 44 | 41 | 102 | 92 |
+| 2 vizinho sem limite | 877 (**20×**) | 778 (**19×**) | 1 634 (16×) | 1 600 (17×) |
+| 3 vizinho sob a cota | 525 (12×) | 765 (**19×**) | 999 (10×) | 1 305 (14×) |
+| 4 vizinho limitado em CPU e concorrência | 41 (**0,93×**) | 47 (**1,15×**) | 124 (1,22×) | 130 (**1,41×**) |
+
+**Aceite pela fase 4.** Um vizinho pesado leva o painel de 42 ms para 0,9 s no p95, e **a cota não o traz
+de volta**. O limite de CPU e concorrência traz. As fases 2 e 3 da rodada 1 foram interrompidas por uma
+suspensão do host, e a rodada 2 é a referência; o veredito é o mesmo nas duas.
+
+**Por que a cota falha.** Ela conta volume por janela de um minuto. O vizinho lê 7,1 M linhas por consulta
+e gasta os 500 M de `read_rows` da cota em 40 a 50 s. Só no resto do minuto fica bloqueado, com o erro
+`QUOTA_EXCEEDED (201)`. Nos primeiros 40 a 50 s de cada minuto ele pesa com força total, e é aí que fica o
+p95 do `acme`. A mediana sobe pouco (de 29 para 37 ms): é a cauda que explode.
+
+**Por que o limite funciona, e o que custa.** O vizinho passa a usar no máximo 1 dos 3 CPU do servidor.
+
+| Custo | Medido |
+|---|---|
+| Para o vizinho, em vazão | Nenhum: 313 consultas completas contra 252 sem limite. Quatro consultas disputando CPU levavam 2,6 s cada; uma por vez leva 0,5 s |
+| Para o vizinho, em erros | **61 % das tentativas rejeitadas** na hora (497 de 810, `TOO_MANY_SIMULTANEOUS_QUERIES (202)`). Um painel real precisa tratar esse erro com nova tentativa |
+| Para o tenant protegido | A q01, uma agregação de mês, ficou a 1,41× na rodada 2 — no limite do aceite. O vizinho ainda ocupa um CPU |
+
+> **Concorrência de 1 não é um valor de produção.** Com esse limite, o segundo usuário simultâneo de um
+> tenant é rejeitado. O que a POC prova é que o **mecanismo** protege; o valor por tenant depende de
+> quantos usuários simultâneos cada um tem, e não foi medido.
+
+O isolamento de **acesso** continua verificado à parte: `verify-rbac.sh` 4 de 4, e o leitor de cada tenant
+recebe `ACCESS_DENIED (497)` no outro, nos dois sentidos. Detalhe da execução em
+[TESTES §6.6](../../docs/TESTES.md#66-t33--vizinho-barulhento).
 
 ---
 
@@ -300,7 +330,7 @@ Declarar a limitação vale mais que o número. Todas se aplicam a este resultad
 | **8 clientes simultâneos é indicativo** | O nó de 4 vCPU é o gargalo e o cliente do Postgres foi estrangulado em 26 % do tempo (viés contra o Postgres) |
 | **Aceite revisto:** p50 com desvio < 30 % entre rodadas; p95 como faixa | O p95 oscilou mais que 30 % em duas execuções anteriores por causa do ambiente; na execução final ficou abaixo de 30 % em 14 de 15 |
 | **Leitor sem limites no ClickHouse** | Mede o motor. O leitor de produção, com o perfil da T1.5, falharia na q05 (§6) |
-| **Isolamento entre tenants não medido** | Database por tenant não dá isolamento de recursos; a POC não mostrou controle (§7) |
+| **Isolamento entre tenants medido com um vizinho** | A cota não protege; o limite de CPU e concorrência protege com um vizinho e com o tenant medido sem limite. Com vários tenants pesados, ou com o limite em todos, não foi medido (§7) |
 | **Uma filial, a maior** | Filiais menores tendem a dar fatores diferentes; o recorte é o pior caso de volume |
 | **Configurações padrão do Postgres para JIT e paralelismo** | JIT ligado e 2 workers paralelos; não foram ajustados por consulta |
 
@@ -312,7 +342,8 @@ Declarar a limitação vale mais que o número. Todas se aplicam a este resultad
   rede e o Trino não entraram.
 - **Que o Postgres não chegaria perto com mais investimento.** O `pgt` é o Postgres ajustado que a POC
   construiu, não o limite do Postgres. Réplica de leitura, mais RAM ou tabela agregada não foram testadas.
-- **Que o ClickHouse aguenta vários tenants pesados ao mesmo tempo** (§7).
+- **Que o ClickHouse aguenta vários tenants pesados ao mesmo tempo.** A §7 mede um vizinho contra um
+  tenant; o valor de concorrência por tenant para produção não foi medido.
 
 ---
 
@@ -336,8 +367,10 @@ Declarar a limitação vale mais que o número. Todas se aplicam a este resultad
 9. **Com 8 clientes o ClickHouse segue uma ordem de grandeza à frente** (9 a 26×), com a ressalva de que o
    nó de teste é o gargalo (§3).
 10. **O que pesa contra o número:** ambiente de 4 vCPU, volume de 3 meses, Postgres que não cabe no próprio
-    cache e o custo do `FINAL` que a carga de produção vai introduzir no mês corrente (§8). Isolamento
-    entre tenants não foi medido (§7).
+    cache e o custo do `FINAL` que a carga de produção vai introduzir no mês corrente (§8).
+11. **Um tenant pesado degrada o outro em 20×, e a cota por tenant não protege** (16×). O limite de CPU e
+    concorrência por usuário protege (1,02×), ao custo de rejeitar consultas do tenant pesado. Database por
+    tenant no mesmo servidor não isola recursos sem esse limite (§7).
 
 ---
 
@@ -355,13 +388,16 @@ bash benchmark/read-bench.sh -r 10 -c 8
 bash benchmark/read-bench.sh --instrumentar
 bash benchmark/read-bench.sh --modo frio -r 3
 bash benchmark/report.sh --aceite
+bash benchmark/noisy-neighbour.sh
 bash scripts/profile.sh resume
 ```
 
 - O `compare-counts.sh` precisa sair 0; qualquer recarga do dado invalida a medição.
 - O modo frio reinicia o pod do Postgres antes de cada execução (30 vezes em `-r 3`).
 - Os CSVs e o relatório bruto ficam em `benchmark/results/`, que não é versionado; este documento é.
-- Tempo total: cerca de 2 h, a maior parte no `-c 8`.
+- O `noisy-neighbour.sh` precisa dos dois tenants carregados e leva cerca de 35 min. Com o host
+  suspenso no meio, a rodada afetada tem de ser descartada.
+- Tempo total: cerca de 2 h 40 min, a maior parte no `-c 8`.
 
 ---
 
@@ -371,6 +407,7 @@ bash scripts/profile.sh resume
 - [TESTES §6.1 — preparação e carga do recorte](../../docs/TESTES.md#61-preparação--carga-do-recorte-e-índice-do-dashboard)
 - [TESTES §6.3 — T3.1, portão de corretude](../../docs/TESTES.md#63-t31--portão-de-corretude)
 - [TESTES §6.5 — T3.2, suíte de leitura](../../docs/TESTES.md#65-t32--suíte-de-leitura)
+- [TESTES §6.6 — T3.3, vizinho barulhento](../../docs/TESTES.md#66-t33--vizinho-barulhento)
 
 **Decisões**
 - [ADR-002 — modelagem da tabela no ClickHouse](../../docs/decisoes/ADR-002-modelagem-clickhouse.md)
@@ -384,5 +421,5 @@ bash scripts/profile.sh resume
 ---
 
 *Arquivo: `benchmark/results/RESULTADO.md` (única exceção versionada do diretório). Incrementar a versão
-quando: a medição for refeita; o volume ou o ambiente mudarem; a T3.3 voltar ao escopo; ou a carga de
-produção por `ReplacingMergeTree` for medida no mês corrente.*
+quando: a medição for refeita; o volume ou o ambiente mudarem; o limite de concorrência por tenant for
+medido; ou a carga de produção por `ReplacingMergeTree` for medida no mês corrente.*

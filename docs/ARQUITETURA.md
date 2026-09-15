@@ -321,9 +321,11 @@ gerência vai atacar, e declarar a limitação vale mais que o número.
 
 - **Isolamento de recursos entre tenants.** A pesquisa base (§10.1) classifica database-por-tenant no mesmo
   cluster como *sem* isolamento de recursos, e recomenda instância dedicada por tenant. A demo de vizinho
-  barulhento (T3.3) foi **retirada do escopo** por decisão do usuário: a POC prova o isolamento de
-  **acesso** entre tenants, mas não mede nem a degradação nem o controle por `QUOTA`. A apresentação não
-  pode afirmar isolamento de recursos, nem que a cota protege a latência.
+  barulhento (T3.3) confirmou isso: um vizinho pesado leva o p95 do painel a 20×, **e a `QUOTA` da T1.5
+  não o traz de volta** (16×). Quem protege é o limite de CPU e concorrência por usuário (1,02×), medido
+  com um vizinho só, e ao custo de rejeitar a maior parte das consultas dele. A apresentação não pode
+  afirmar isolamento de recursos, nem que a cota protege a latência
+  ([TESTES §6.6](TESTES.md#66-t33--vizinho-barulhento)).
 - **Comportamento em volume produtivo.** minikube, uma réplica, amostra de dado. As conclusões são de
   **razão entre motores**, não de latência absoluta.
 - **I/O físico frio.** "Cold" aqui significa caches do motor derrubados. O page cache do sistema
