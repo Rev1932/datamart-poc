@@ -47,3 +47,25 @@ spec:
       resources:
         requests: {cpu: 50m, memory: 64Mi}
         limits: {cpu: "2", memory: 1Gi}
+---
+# Vizinho barulhento da T3.3: gera a carga em dm_globex, separado do pod que mede o acme.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bench-vizinho-ch
+  namespace: datamart
+  labels:
+    app: bench-cliente
+spec:
+  restartPolicy: Always
+  containers:
+    - name: cliente
+      image: clickhouse/clickhouse-server:24.8
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      env:
+        - name: CH_HOST
+          value: clickhouse-datamart.datamart.svc.cluster.local
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: "2", memory: 1Gi}
