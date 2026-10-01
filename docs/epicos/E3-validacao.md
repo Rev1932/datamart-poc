@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.1 |
-| Data | 2026-09-11 |
-| Status | Não iniciado — pré-requisitos no [estado de partida](../TODO.md#estado-de-partida--o-que-o-e2-entrega-ao-e3) |
+| Versão | 1.3 |
+| Data | 2026-09-15 |
+| Status | **Encerrado em 2026-09-15** — as 5 tasks fechadas. A T3.3 saiu do escopo em 2026-09-14 e voltou no mesmo dia, por decisão do usuário |
 | Objetivo | Produzir `benchmark/results/RESULTADO.md` — o material da apresentação |
 | Depende de | [E2](E2-execucao.md) completo ✅ |
 | Bloqueia | — |
@@ -233,9 +233,40 @@ bash benchmark/report.sh
 Desvio de p95 < 30% entre rodadas idênticas. Desvio maior significa ruído de fundo — investigar antes de
 publicar.
 
+> **Revisto em 2026-09-14** (decisão do usuário, ver a tabela abaixo): o critério passou a ser **desvio de
+> p50 < 30 % entre rodadas com `-c 1`**, com o p95 publicado como faixa e o `-c 8` como indicativo. O
+> critério original foi investigado, como pede o parágrafo acima, e a causa do ruído é o ambiente, não o
+> motor.
+
+### Desvios da implementação em relação a esta especificação
+
+Registrados em 2026-09-14, com as decisões do usuário. A execução está em
+[TESTES §6.5](../TESTES.md#65-t32--suíte-de-leitura).
+
+| Especificado | Implementado | Por quê |
+|---|---|---|
+| `.pgt` só em q04 e q05, em arquivo próprio | Os três braços rodam as 5 consultas; `pgt` é o `.pg` com `search_path = gold_tuned` | Mesma query, sem arquivo duplicado, e mais evidência pelo mesmo custo |
+| Instrumentação do ClickHouse por `system.query_log` | Eventos `SelectedRows`, `SelectedBytes` e `MemoryTrackerPeakUsage` informados pelo cliente | São os mesmos eventos do log. Correção de 2026-09-15: a justificativa original estava errada — o `query_log` **não** está desligado — o [D12](../TESTES.md#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) o manteve, e a T3.3 o usa |
+| `read_rows`/`read_bytes` no CSV de tempo | Colunas vazias no CSV de tempo; valores em `instr_<ts>.csv` | Cronometragem e instrumentação são passos separados (Metodologia, item 1) |
+| Leitura com o usuário do tenant | `u_<tenant>_bench`: só `SELECT`, sem cota e sem limites de resultado, tempo e memória | O `p_<tenant>_ro` tem `max_result_rows = 200000` e cota por minuto; a q05 (494 mil linhas) falhava e o `-c 8` mediria a cota. O Postgres não tem limite equivalente. Decisão do usuário |
+| Recursos como no orçamento do E1 | Postgres igualado ao ClickHouse: 3 CPU, 3 GiB, `shared_buffers` 640MB | Com 1,75 GiB a tabela não cabia no cache e o `pg` relia o disco. Decisão do usuário: "mesmo hardware" |
+| Clientes sem local definido | Pods `bench-cliente-pg` e `bench-cliente-ch` (`benchmark/clientes.yaml`) | A CPU do cliente não entra no limite do motor. Decisão do usuário |
+| `DISCARD ALL` + restart no modo frio | Restart do pod `postgres-0` antes de **cada** execução fria de `pg` e `pgt` | Uma consulta fria esquentaria o cache da seguinte |
+| — | `psql` com `FETCH_COUNT` e `cursor_tuple_fraction = 1` | Sem cursor, o psql guarda o resultado inteiro da q05 na memória; o `cursor_tuple_fraction` mantém o plano de um `SELECT` comum |
+| — | `--paridade` antes de medir | Os três braços precisam devolver o mesmo resultado, senão a suíte mede trabalhos diferentes. Pegou dois defeitos antes da primeira medição |
+| `-r 10` | `-r 30` com `-c 1`; `-r 10` com `-c 8` | Com 10 amostras, o p95 pelo rank mais próximo é o próprio máximo, e uma execução lenta o move sozinha |
+| Braços alternados a cada consulta | Um braço inteiro por vez: todas as consultas de `pg`, depois `pgt`, depois `ch` | `pg` (3,3 GB) e `pgt` (2,8 GB) dividem um pod de 3 GiB. Alternar os braços faz um expulsar o cache do outro, e a latência passa a depender da ordem |
+| **Aceite: desvio de p95 < 30 %** | **Desvio de p50 < 30 % com `-c 1`**; p95 apresentado como faixa entre rodadas; `-c 8` indicativo | Duas execuções mostraram que, neste ambiente (4 vCPU no WSL2), o p95 oscila de 30 % a 120 % entre rodadas enquanto o p50 fica estável, e que com `-c 8` o cliente disputa CPU com o motor. A diferença entre os motores (9 a 57×) é muito maior que essa oscilação. Decisão do usuário, 2026-09-14 |
+
 ---
 
 ## T3.3 — Vizinho barulhento
+
+> **Resultado (2026-09-15):** o vizinho leva o p95 do painel a 20× o isolado, **e a cota da T1.5 não o
+> traz de volta** (16×). Quem protege é o limite de CPU e concorrência por usuário (1,02×), testado numa
+> quarta fase que a especificação não tinha. Execução em [TESTES §6.6](../TESTES.md#66-t33--vizinho-barulhento).
+> A T3.3 saiu do escopo em 2026-09-14 para o `RESULTADO.md` sair no mesmo dia, e voltou por decisão do
+> usuário.
 
 ### Roteiro
 
@@ -264,6 +295,20 @@ bash benchmark/noisy-neighbour.sh
 Três números: p95 isolado, p95 sob carga do vizinho, p95 sob carga **com** quota. O terceiro próximo do
 primeiro.
 
+> **Revisto em 2026-09-14** (decisão do usuário): a fase 2 degrada o p95 da q04 em 1,3× ou mais, e o
+> **melhor mecanismo**, cota ou limite de CPU e concorrência, o traz a até 1,3× o isolado.
+
+### Desvios da implementação em relação a esta especificação
+
+| Especificado | Implementado | Por quê |
+|---|---|---|
+| Três pontos: isolado, vizinho, vizinho com quota | Quatro fases: a quarta com `u_globex_limitado`, `max_threads = 1` e `max_concurrent_queries_for_user = 1` | A hipótese registrada antes da execução era que a cota, que limita volume por minuto, não protegeria a latência. Sem uma alternativa medida, o resultado seria só "não funciona". Usuário e perfil próprios autorizados pelo usuário |
+| Aplicar `QUOTA` e `max_execution_time` em `dm_globex` | Fase 3 com o leitor real, `u_globex_ro`: perfil e cota da T1.5, sem nada novo | Mede o que produção teria, e não uma cota desenhada para o teste |
+| — | Fase 4 **sem** cota | As rejeições por concorrência contam como erro, e a cota limita erros a 20 por minuto. Com as duas juntas, quem bloquearia o vizinho seria a cota de erros, e não o limite que a fase testa |
+| — | Fase 2 com `u_globex_bench`, sem cota nem limites | Para a degradação ser a do motor, e não a de um vizinho já contido |
+| Medir por número de execuções | Por tempo: 180 s por fase, q04 e q01 alternadas, 10 s de aquecimento, 60 s de pausa, 2 rodadas | A carga do vizinho é contínua; medir por tempo dá a mesma janela a toda fase. Os 60 s zeram a janela da cota |
+| Vizinho sem local definido | Pod `bench-vizinho-ch`, separado do pod que mede | O cliente do vizinho não disputa CPU com o cliente que mede. O estrangulamento do pod que mede ficou em 0 |
+
 ---
 
 ## T3.4 — Relatório
@@ -278,7 +323,7 @@ primeiro.
 | 4 | I/O: `read_bytes` e `read_rows` por query | É o que **explica** a tabela 3. Sem ela o ganho parece mágica |
 | 5 | Compressão em disco: `pg_total_relation_size` × `sum(bytes_on_disk)` de `system.parts` | Frequentemente o número isolado mais convincente |
 | 6 | q05 (`SELECT *`) destacada | Põe a decisão sobre o framework na mesa com um número |
-| 7 | Vizinho barulhento, antes e depois da quota | Responde à pergunta de multi-tenant |
+| 7 | Vizinho barulhento, antes e depois da quota — e do limite de CPU e concorrência | Responde à pergunta de multi-tenant |
 | 8 | Ressalvas | Ver abaixo |
 
 Mais um gráfico de barras ASCII por query, para colar num deck sem ferramenta.
@@ -288,7 +333,8 @@ Mais um gráfico de barras ASCII por query, para colar num deck sem ferramenta.
 - Page cache do SO não derrubado — "cold" é cache do motor;
 - minikube não é produção: uma réplica, sem Keeper, sem replicação;
 - volume da POC não é o volume produtivo — as conclusões são de **razão**, não de latência absoluta;
-- database-por-tenant não dá isolamento de recursos; o que a POC mostra é o controle por quota;
+- database-por-tenant não dá isolamento de recursos; o que a POC mostra é que a cota não protege a
+  latência, e que o limite de CPU e concorrência protege, com custo para o vizinho;
 - método de carga: a POC lê uma `MergeTree` limpa. Com o B2 decidido para produção
   ([ADR-004](../decisoes/ADR-004-janela-de-carga.md)), as consultas do mês corrente pagam o `FINAL`,
   medido em 3,5 a 7× no painel enquanto a partição tem várias parts.
@@ -304,10 +350,15 @@ Mais um gráfico de barras ASCII por query, para colar num deck sem ferramenta.
 
 ## Checklist Go/No-Go do épico
 
-- [ ] [ADR-004](../decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido
-- [ ] `bash benchmark/compare-counts.sh` — `delta = 0` em toda linha
-- [ ] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam
-- [ ] Suíte rodada com `-c 1` e `-c 8`, desvio de p95 < 30% entre rodadas idênticas
-- [ ] `bash benchmark/noisy-neighbour.sh` — p95 degrada e volta após a quota
-- [ ] `RESULTADO.md` com as 8 seções, incluindo a de ressalvas
-- [ ] Nenhuma afirmação no relatório que a seção "o que a POC não prova" contradiga
+Verificado em 2026-09-14; a T3.3, em 2026-09-15.
+
+- [x] [ADR-004](../decisoes/ADR-004-janela-de-carga.md) preenchido com o número medido
+- [x] `bash benchmark/compare-counts.sh` — `delta = 0` em toda linha
+- [x] `bash scripts/verify-rbac.sh` — 4 asserções negativas passam (e o leitor do globex negado no acme)
+- [x] Suíte rodada com `-c 1` e `-c 8` — aceite revisto pelo usuário: desvio de **p50** < 30 % com `-c 1`,
+      15 de 15; `-c 8` indicativo
+- [x] `bash benchmark/noisy-neighbour.sh` — p95 degrada (20×) e volta pelo limite de CPU e
+      concorrência (1,02×). **Pela cota, não volta** (16×) — aceite revisto pelo usuário
+- [x] `RESULTADO.md` com as 8 seções, incluindo a de ressalvas
+- [x] Nenhuma afirmação no relatório que a seção "o que a POC não prova" contradiga — o
+      [ARQUITETURA §7](../ARQUITETURA.md#7-o-que-esta-poc-não-prova) foi ajustado ao resultado da T3.3

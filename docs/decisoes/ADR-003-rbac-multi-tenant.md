@@ -60,5 +60,8 @@ falha com `Code 497`; `readonly` = 2; `join_use_nulls` = 1.
   — e o relatório deve dizer isso em vez de fingir que o problema não existe.
 - O modelo **não dá isolamento de recursos**. A pesquisa base (§10.1) classifica database-por-tenant no
   mesmo cluster exatamente assim, e recomenda instância dedicada. A demo de vizinho barulhento
-  ([E3](../epicos/E3-validacao.md) T3.3) mostra o controle por quota — que é o mecanismo real, não
-  isolamento forte. A apresentação não pode afirmar o segundo.
+  ([E3](../epicos/E3-validacao.md) T3.3, [TESTES §6.6](../TESTES.md#66-t33--vizinho-barulhento)) mediu que
+  **a quota não protege a latência** (com o vizinho sob quota, o p95 do outro tenant fica em 16× o
+  isolado) e que o limite de CPU e concorrência
+  por usuário protege (1,02×), rejeitando a maior parte das consultas do vizinho. A apresentação não pode
+  afirmar isolamento forte.

@@ -2,10 +2,10 @@
 
 | Campo | Valor |
 |---|---|
-| Versão | 1.10 |
-| Data da execução | 2026-09-08 (E1) · 2026-09-09 a 2026-09-11 (E2 e início do E3) |
+| Versão | 1.11 |
+| Data da execução | 2026-09-08 (E1) · 2026-09-09 a 2026-09-15 (E2 e E3) |
 | Branch | `feat/v2-olap` (E1) · `feat/v2-olap-e2-execucao` (E2, E3) |
-| Escopo | **Épicos 1 e 2 completos** — T1.1 a T1.8 e T2.1 a T2.6. **E3:** preparação, T3.0 e T3.1 |
+| Escopo | **Épicos 1 e 2 completos** — T1.1 a T1.8 e T2.1 a T2.6. **E3:** preparação, T3.0, T3.1, T3.2 e T3.3 |
 | Resultado | E1: **48 testes** · 40 verdes · 7 falharam e passaram após correção · 1 teve o critério substituído. E2 e E3 registram por seção (§5, §6). Defeitos D4 a D18; **1 aberto** (D4) |
 | Progresso das tasks | [TODO.md](TODO.md) — este arquivo registra **execução**, não estado |
 
@@ -910,8 +910,11 @@ filtro da query, não divergência entre motores.
 
 ## 6. Épico 3 — Validação
 
-🟨 **Preparação completa e os dois portões fechados**: T3.1 ([§6.3](#63-t31--portão-de-corretude)) e
-T3.0 ([§6.4](#64-t30--portão-de-janela)). T3.2, T3.3 e T3.4 ainda não foram executadas. O estado de cada uma está no
+✅ **Encerrado em 2026-09-15.** T3.1 ([§6.3](#63-t31--portão-de-corretude)), T3.0
+([§6.4](#64-t30--portão-de-janela)), T3.2 ([§6.5](#65-t32--suíte-de-leitura)) e T3.3
+([§6.6](#66-t33--vizinho-barulhento)) medidas; a T3.4 produziu o
+[`RESULTADO.md`](../benchmark/results/RESULTADO.md), com os números conferidos contra esta seção e contra
+a instrumentação (unidades em MB decimais em todo o documento). O estado de cada uma está no
 [estado de partida](TODO.md#estado-de-partida--o-que-o-e2-entrega-ao-e3) do TODO.
 
 ### 6.1 Preparação — carga do recorte e índice do dashboard
@@ -1007,9 +1010,9 @@ volume do recorte, 2026-09 (1 039 682 linhas), em `dm_acme`: run `manual__2026-0
 ([§5.8](#58-t26--aceite-sobre-o-snapshot-fixado)).
 
 Fontes: marcações de tempo do `AppLogger` no log da task, `pg_stat_statements` para o comando de merge,
-`pg_stat_user_tables` e `system.parts`. O ClickHouse não tem `query_log` (desligado em
-[D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor)), então a troca de partição só tem a
-resolução do log da aplicação.
+`pg_stat_user_tables` e `system.parts`. O `query_log` do ClickHouse, que o
+[D12](#d12--os-system-logs-do-clickhouse-derrubam-o-servidor) manteve ligado, não foi consultado nesta
+medição, então a troca de partição ficou com a resolução do log da aplicação.
 
 | Postgres | Primeira carga | Recarga | Razão |
 |---|---:|---:|---:|
@@ -1293,6 +1296,203 @@ completas, com o método, estão na
 
 Decisão do usuário: POC com `REPLACE PARTITION`; produção futura com B2. As tabelas de experimento
 ficaram no database `bench_carga` ([§9](#9-artefatos-deixados-no-cluster)).
+
+### 6.5 T3.2 — suíte de leitura
+
+Executada em 2026-09-14, em três execuções, até o aceite. Os desvios em relação à especificação e as
+decisões do usuário estão no [E3](epicos/E3-validacao.md#desvios-da-implementação-em-relação-a-esta-especificação).
+Relatório final em `benchmark/results/report_t32.md`, gerado por `bash benchmark/report.sh --aceite` sobre
+os CSVs do mesmo diretório. O diretório está no `.gitignore`; as tabelas abaixo são a cópia versionada.
+
+| Ambiente | Valor |
+|---|---|
+| Nó | minikube, perfil `small`: 4 vCPU e 8 GiB no WSL2 |
+| Postgres | 16, **3 CPU / 3 GiB**, `shared_buffers` 640MB, JIT ligado, `max_parallel_workers_per_gather` 2 |
+| ClickHouse | 24.8, 3 CPU / 3 GiB, `max_server_memory_usage` 2 GiB, lido por `u_acme_bench` |
+| Clientes | pods `bench-cliente-pg` e `bench-cliente-ch`, 2 CPU cada; `psql` com `FETCH_COUNT` |
+| Dado | `dm_acme`, 7 114 401 linhas, 2026-07 a 2026-09; filtros em LIMEIRA / `dw_limeira` |
+| Pré-condições | `compare-counts.sh` OK e `profile.sh quiesce` antes de cada execução; `--paridade` OK nas 5 consultas × 3 braços |
+
+#### Resultado — quente, `-c 1`, 2 rodadas × 30 execuções, um braço por vez
+
+`bash benchmark/report.sh --aceite` → `ACEITE: desvio de p50 < 30 % em toda consulta e braço do modo
+quente com -c 1`, exit 0.
+
+| Consulta | p50 / p95 `pg` | p50 / p95 `pgt` | p50 / p95 `ch` | fator p95 `pg`/`ch` | fator p95 `pgt`/`ch` |
+|---|---:|---:|---:|---:|---:|
+| q01 CEP por unidade | 2 398 / 2 608 | 3 502 / 3 720 | 76 / 92 | 28× | 40× |
+| q02 série diária | 3 710 / 4 289 | 4 111 / 5 046 | 129 / 140 | 31× | 36× |
+| q03 top produtos fora do limite | 2 186 / 2 413 | 2 355 / 2 561 | 98 / 120 | 20× | 21× |
+| **q04 painel pela view** | 2 060 / 2 577 | 357 / 399 | **31 / 47** | **55×** | 8× |
+| q05 `SELECT *` da view | 2 560 / 2 711 | 926 / 994 | 63 / 89 | 30× | 11× |
+
+Milissegundos. Maior desvio de p50 entre as rodadas: 17 % (q04 `ch`, 29 contra 34 ms). O p95 também
+ficaria abaixo de 30 % em 14 das 15 combinações; a exceção é a q04 `ch`, com 38 contra 60 ms.
+
+#### Indicativos — `-c 8` e modo frio
+
+| Consulta | `-c 8`: p95 `pg` / `pgt` / `ch` | fator `pg`/`ch` | Frio, `-r 3`: p95 `pg` / `pgt` / `ch` | fator `pg`/`ch` |
+|---|---:|---:|---:|---:|
+| q01 | 23 587 / 25 207 / 1 851 | 13× | 2 690 / 6 203 / 129 | 21× |
+| q02 | 40 671 / 66 804 / 2 854 | 14× | 9 319 / 20 271 / 141 | 66× |
+| q03 | 22 701 / 25 481 / 2 526 | 9× | 7 676 / 4 370 / 163 | 47× |
+| q04 | 13 971 / 4 606 / 536 | 26× | 10 346 / 2 133 / 103 | 100× |
+| q05 | 17 808 / 10 420 / 2 047 | 9× | 3 098 / 1 043 / 112 | 28× |
+
+O `-c 8` é indicativo por dois motivos. O nó tem 4 vCPU e os 8 clientes disputam CPU com o motor, e mesmo
+com 2 CPU o cliente do Postgres ficou estrangulado em 26 % dos períodos (187 a 225 s parado por rodada),
+o do `pgt` em 10 a 12 % e o do ClickHouse em 6 a 9 %. O viés é contra o Postgres. As rodadas também
+alternaram os braços por consulta. O modo frio tem uma rodada de 3 execuções, e o p95 dele é o máximo
+das três. Nos dois casos o fator fica na mesma ordem de grandeza do `-c 1`.
+
+#### Instrumentação — por que os tempos são esses
+
+Uma execução por consulta e braço. Tempo de `EXPLAIN ANALYZE` não é latência: ele cronometra cada nó e
+infla a duração (q04 `pg`: 20 s no `EXPLAIN`, 2,1 s na medição).
+
+| Consulta | `pg`: linhas / bytes lidos | `pgt` | `ch` |
+|---|---|---|---|
+| q01 | 7,1 M / 2,5 GB — varredura inteira | 3,5 M / 1,1 GB — só agosto | 2,45 M / 81 MB |
+| q02 | 7,1 M / 2,5 GB | 6,2 M / 2,3 GB | 4,8 M / 73 MB |
+| q03 | 7,1 M / 2,5 GB | 7,1 M / 2,2 GB | 7,1 M / 221 MB |
+| q04 | 0,49 M / **4,4 GB** | 0,78 M / 240 MB | 0,64 M / 16 MB |
+| q05 | 0,49 M / 4,4 GB | 0,78 M / 240 MB | 0,64 M / 70 MB |
+
+- **q01 a q03:** o recorte é grande demais para o índice (34 % da tabela na q01), e o Postgres varre os
+  2,5 GB. O ClickHouse lê as mesmas linhas, mas só as colunas usadas, comprimidas: 11 a 31 vezes menos
+  bytes.
+- **q04 e q05 no `pg`:** o índice do painel `(filial, banco, unidade, timestamp)` acha as 494 mil linhas,
+  mas cada uma está numa página diferente da tabela: 534 mil blocos, ~1 por linha. O `pgt` resolve com
+  partição mensal e ordem física por `timestamp` — de 2 060 para 357 ms na q04 —, e ainda fica 8 vezes
+  atrás do ClickHouse.
+- **A armadilha da q05 não apareceu como a especificação previa.** Esperava-se o ganho caindo de
+  10–50× para 2–5× no `SELECT *`. Medido: `pg`/`ch` cai de 55× (q04) para 30×, e `pgt`/`ch` sobe de 8×
+  para 11×. O protocolo nativo do ClickHouse, colunar e comprimido, transfere as 494 mil linhas em ~60 ms.
+
+#### As três execuções
+
+| Execução | O que aconteceu | Destino dos CSVs |
+|---|---|---|
+| 1 | Cliente do Postgres com 1 CPU estrangulado em **54 %** dos períodos (58 min parado); p95 de 10 amostras = máximo. 8 falhas de 30 | `results/descartadas/` |
+| 2 | Clientes com 2 CPU e `-r 30`. O p95 do `-c 1` ainda oscilou 30 a 124 %, e o p50 da q05 `pg` mudou 47 %: `pg` (3,3 GB) e `pgt` (2,8 GB) expulsavam o cache um do outro num pod de 3 GiB | `-c 1` em `results/ordem-por-consulta/`; `-c 8` mantido como indicativo |
+| 3 | Um braço inteiro por vez. p50 da q05 `pg`: desvio de **0,0 %**. Aceite 15 de 15 | `results/` |
+
+#### Defeitos do harness pegos pelos testes, antes de valer como medição
+
+| Defeito | Como apareceu | Correção |
+|---|---|---|
+| `psql` e `clickhouse-client` imprimem o tempo mesmo quando a consulta falha: um erro seria medido como consulta rápida | Paridade: q02 `pg` com 0 linhas | Os dois executores falham em qualquer `ERROR` ou código de saída ≠ 0; teste com SQL inválido |
+| `ORDER BY 1, 2 COLLATE "C"` é sintaxe inválida no Postgres | Mesmo caso | `ORDER BY dia, atributo_nome_pai COLLATE "C"` |
+| O perfil `p_acme_ro` corta o resultado em 200 mil linhas, e o cliente recebia metade da q05 sem erro | Paridade: q05 `ch` com 195 395 linhas contra 494 576 | Usuário `u_acme_bench`, decisão do usuário |
+| O stream do `kubectl exec` cai em transferências de ~80 MB | Paridade abortada com `unexpected EOF` | Saída comprimida no pod e até 3 tentativas |
+
+#### Achado para produção
+
+**O `SELECT *` do painel (q05) não passa pelo perfil de leitura que a POC desenhou.** O `p_<tenant>_ro`
+da T1.5 limita o resultado a 200 mil linhas, o tempo a 30 s e a memória a 700 MB, com cota por minuto.
+São os limites certos contra vizinho barulhento (T3.3), mas uma tela que traga uma semana de uma filial
+em linhas cruas estoura o `max_result_rows`. A decisão sobre o limite, ou sobre a tela, é de produto.
+
+#### O que esta medição não prova
+
+- **Latência absoluta de produção.** Nó de 4 vCPU no WSL2, uma réplica, cache de disco do SO não
+  derrubado. As conclusões são de **razão** entre os motores.
+- **Concorrência real.** O `-c 8` ficou limitado pelo próprio nó.
+- **O Postgres com mais memória.** Com 3 GiB, nem a `public` (3,3 GB) cabe no cache. A razão diminuiria
+  se o Postgres tivesse RAM para o conjunto inteiro — o ClickHouse cabe em 522 MB porque comprime.
+- **O custo do `FINAL`.** A POC lê `MergeTree`; com o B2 de produção, o mês corrente pagaria de 3,5 a 7×
+  no painel ([análise de carga](analise-estrategia-carga-clickhouse.md)).
+
+### 6.6 T3.3 — vizinho barulhento
+
+Executada de 2026-09-14 16:49 a 2026-09-15 07:55, com `profile.sh quiesce`, depois que o usuário
+recolocou a T3.3 no escopo. `bash benchmark/noisy-neighbour.sh` → **`ACEITE: o vizinho degrada a q04 a
+20.74× o isolado; protege a fase 4 (CPU e concorrência, 1.02×)`**, exit 0. Os desvios em relação à
+especificação estão no [E3](epicos/E3-validacao.md#t33--vizinho-barulhento).
+
+| Item | Valor |
+|---|---|
+| Medido | q04 (painel, 1 semana de LIMEIRA) e q01 (CEP de agosto de LIMEIRA) em `dm_acme`, alternadas, uma por vez, por `u_acme_bench` no pod `bench-cliente-ch` |
+| Vizinho | 4 laços em paralelo da consulta `benchmark/queries/vizinho.ch.sql` em `dm_globex`, no pod `bench-vizinho-ch`: agregação sem filtro sobre as 7,1 M linhas, 0,23 a 0,35 s sozinha |
+| Fases | 1 sem vizinho · 2 `u_globex_bench`, sem limite · 3 `u_globex_ro`, perfil e cota da T1.5 · 4 `u_globex_limitado`, `max_threads = 1` e `max_concurrent_queries_for_user = 1`, sem cota |
+| Tempo | 180 s de medição por fase, 10 s de aquecimento do vizinho, 60 s de pausa entre fases, 2 rodadas |
+| Aceite (decisão do usuário) | A fase 2 degrada o p95 da q04 em 1,3× ou mais, e o melhor mecanismo, fase 3 ou 4, o traz a até 1,3× o isolado |
+| Estrangulamento do pod que mede | 0 períodos em todas as fases |
+
+#### A rodada 1 foi interrompida pela suspensão do host
+
+O WSL2 ficou suspenso durante a noite. As amostras de cada fase têm o horário do pod, e a sequência mostra
+o salto: a fase 2 da rodada 1 mediu 2 min e parou por 10 h (19:56 → 06:15 UTC); a fase 3 teve dois saltos,
+de 2,3 h e 1,9 h. As fases 1 e 4 da rodada 1 e **a rodada 2 inteira** não têm salto nenhum. As fases
+contaminadas mudam só o tamanho da degradação, não o veredito: a fase 2 degrada nas duas rodadas, e a
+fase 4 é limpa nas duas.
+
+#### Resultado — p95 em ms e fator sobre o isolado da mesma rodada
+
+| Fase | Vizinho | q04 r1 | q04 r2 | q01 r1 | q01 r2 | Estado |
+|---|---|---:|---:|---:|---:|---|
+| 1 | nenhum | 44 | 41 | 102 | 92 | limpa |
+| 2 | sem limite | 877 (**20×**) | 778 (**19×**) | 1 634 (16×) | 1 600 (17×) | r1 com 2 min |
+| 3 | cota da T1.5 | 525 (12×) | 765 (**19×**) | 999 (10×) | 1 305 (**14×**) | r1 contaminada |
+| 4 | CPU e concorrência | 41 (**0,93×**) | 47 (**1,15×**) | 124 (1,22×) | 130 (**1,41×**) | limpa |
+
+As duas rodadas somadas, como o script avalia: q04 isolada 42 ms, fase 2 871 ms (20,7×), fase 3 660 ms
+(15,7×), fase 4 43 ms (1,02×); q01 isolada 96 ms, fase 4 125 ms (1,30×). O p50 da fase 3 sobe pouco (de 29
+para 37 ms na q04) e é a cauda que explode — o padrão explicado abaixo.
+
+**O aceite passa pela q04, em cada rodada separadamente. A q01 não tem a mesma folga:** 1,30× somada e
+1,41× na rodada 2, a única com as 4 fases limpas. A agregação de um mês inteiro usa mais CPU que a
+consulta do painel, e o vizinho limitado a uma thread ainda ocupa um dos 3 CPU do servidor.
+
+#### Carga do vizinho — `system.query_log`, rodada 2
+
+| Fase | Usuário | Consultas completas | p50 do vizinho | Tempo de consulta somado | Rejeitadas |
+|---|---|---:|---:|---:|---|
+| 2 | `u_globex_bench` | 252 | 2 602 ms | 658 s em 180 s | 0 |
+| 3 | `u_globex_ro` | 227 | 2 380 ms | 533 s | 92, `QUOTA_EXCEEDED (201)` |
+| 4 | `u_globex_limitado` | 313 | 503 ms | 163 s | 497, `TOO_MANY_SIMULTANEOUS_QUERIES (202)`, com 0 ms de duração |
+
+Rodada 1, pelo `vizinho_carga_*.csv`: 173, 74 e 298 completas; 66 rejeições por cota e 502 por
+concorrência.
+
+#### Por que a cota não protege
+
+A mensagem do erro diz qual limite estourou:
+
+```
+Quota for user `u_globex_ro` for 60s has been exceeded: read_rows = 500050243/500000000.
+Interval will end at 2026-09-15 10:49:00.
+```
+
+Cada execução do vizinho lê 7,1 M linhas, então a cota de 500 M por minuto comporta cerca de 70. Com 4 em
+paralelo, o vizinho gasta isso em **40 a 50 s**, e fica bloqueado só no resto do minuto. No `query_log`,
+as rejeições caem sempre no fim da janela: 10:48:50, 10:49:50, 10:50:40 a 10:50:59. A cota é controle de
+**volume por minuto**; nos primeiros 40 a 50 s de cada minuto o vizinho pesa com força total, e é aí que
+fica o p95 do acme.
+
+#### Por que o limite de CPU e concorrência protege, e o que custa
+
+Com `max_concurrent_queries_for_user = 1`, o vizinho roda uma consulta por vez; com `max_threads = 1`,
+cada uma usa uma thread. Ele passa a ocupar no máximo 1 dos 3 CPU do servidor, e o acme fica com os
+outros dois.
+
+- **O vizinho não perdeu vazão:** completou 313 consultas contra 252 sem limite. Quatro consultas
+  disputando 3 CPU levavam 2,6 s cada; uma por vez leva 0,5 s.
+- **Mas 61 % das tentativas foram rejeitadas na hora** (497 de 810). Um cliente real precisa tratar o
+  código 202 com nova tentativa, ou mostra erro ao usuário. O `vizinho.sh` espera 1 s e tenta de novo.
+- **Uma concorrência de 1 não é um valor de produção:** um tenant com 4 pessoas no painel teria 3 delas
+  rejeitadas. O valor certo depende de quantos usuários simultâneos cada tenant tem, e não foi medido.
+
+#### O que esta medição não prova
+
+- **Que o limite serve para todos os tenants ao mesmo tempo.** O acme foi medido sem limite, por
+  `u_acme_bench`. Com `max_threads = 1` no perfil de todo tenant, a latência isolada de cada um também
+  sobe; a q01 em uma thread não foi medida.
+- **Mais de um vizinho.** Dois tenants pesados limitados a um CPU cada deixariam um CPU para o terceiro.
+- **Um valor de cota que funcione.** Uma cota menor de `read_rows` bloquearia mais tempo por minuto, mas
+  também bloquearia o uso legítimo, e o início de cada minuto continuaria livre. Não foi testada.
+- **Isolamento de memória e de disco.** A consulta do vizinho usa 12,8 MB de memória; o que foi medido
+  é a disputa por CPU.
 
 ---
 
@@ -1779,6 +1979,10 @@ ocasião. Nenhum atrapalha uma reexecução: todos os caminhos testados são ide
 | `~/.cache/datamart-poc/ports/` | `ports.sh` — arquivos de PID e log; fora do cluster |
 | Pods `pytest-t21`, `pytest-t23`, `pytest-t24`, `pytest-t26` | E2 — pods efêmeros das suítes, todos `Completed` |
 | ~~Schemas `teste_t24*` em `dm_acme`~~ | Removidos em 2026-09-11, com autorização |
+| Pods `bench-cliente-pg` e `bench-cliente-ch` | T3.2 — clientes da suíte de leitura; o `read-bench.sh` recria se faltarem |
+| Secret `ch-bench`, usuário `u_acme_bench` e perfil `p_bench` no ClickHouse | T3.2 — leitor do benchmark sem cota nem limites |
+| Pod `bench-vizinho-ch`, usuários `u_globex_bench` e `u_globex_limitado`, perfil `p_globex_limitado` | T3.3 — o vizinho barulhento; o `noisy-neighbour.sh` recria se faltarem |
+| Views `vw_cep` em `public` e `gold_tuned` (`dm_acme`) e em `dm_acme` no ClickHouse | T3.2 — views da q04 e da q05 |
 | Database `bench_carga` no ClickHouse | Análise de carga: `fato_rp`, `fato_rmt_dash`, `fato_rmt_id`, `fato_rmt_pk` e 6 stagings `stg_rp_*`, 3,2 GiB — [análise](analise-estrategia-carga-clickhouse.md) |
 | `~/silver-ref/dw_andon_peso/` | E2 — cópia local incompleta, 20 GiB; fora do cluster. A referência válida é `~/silver-ref/dw_andon_peso-v3321/` |
 

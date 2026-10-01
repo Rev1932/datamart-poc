@@ -1,0 +1,71 @@
+# Pods que disparam as consultas da T3.2. Ficam fora dos pods dos bancos para que a CPU do cliente
+# não entre no limite do motor medido.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bench-cliente-pg
+  namespace: datamart
+  labels:
+    app: bench-cliente
+spec:
+  restartPolicy: Always
+  containers:
+    - name: cliente
+      image: postgres:16-alpine
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      env:
+        - name: PGHOST
+          value: postgres.datamart.svc.cluster.local
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef: {name: pg-creds, key: POSTGRES_USER}
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef: {name: pg-creds, key: POSTGRES_PASSWORD}
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: "2", memory: 1Gi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bench-cliente-ch
+  namespace: datamart
+  labels:
+    app: bench-cliente
+spec:
+  restartPolicy: Always
+  containers:
+    - name: cliente
+      image: clickhouse/clickhouse-server:24.8
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      env:
+        - name: CH_HOST
+          value: clickhouse-datamart.datamart.svc.cluster.local
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: "2", memory: 1Gi}
+---
+# Vizinho barulhento da T3.3: gera a carga em dm_globex, separado do pod que mede o acme.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bench-vizinho-ch
+  namespace: datamart
+  labels:
+    app: bench-cliente
+spec:
+  restartPolicy: Always
+  containers:
+    - name: cliente
+      image: clickhouse/clickhouse-server:24.8
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      env:
+        - name: CH_HOST
+          value: clickhouse-datamart.datamart.svc.cluster.local
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: "2", memory: 1Gi}
